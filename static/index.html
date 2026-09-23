@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ИИ-консультант EKT — подбор электротехнических товаров и помощь с корзиной.">
+  <title>EKT AI — консультант по каталогу</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: {
+        colors: { ink: '#172033', brand: '#f07c22', brandDark: '#d9600c', canvas: '#f3f5f7' },
+        boxShadow: { soft: '0 20px 60px rgba(23,32,51,.10)' }
+      }}
+    };
+  </script>
+  <style>
+    * { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+    body { min-height: 100dvh; }
+    #messages { scroll-behavior: smooth; }
+    .typing-dot { animation: pulse 1.15s infinite ease-in-out; }
+    .typing-dot:nth-child(2) { animation-delay: .16s; }
+    .typing-dot:nth-child(3) { animation-delay: .32s; }
+    @keyframes pulse { 0%, 70%, 100% { opacity: .25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
+    @media (prefers-reduced-motion: reduce) { *, #messages { animation: none !important; scroll-behavior: auto !important; } }
+  </style>
+</head>
+<body class="bg-canvas text-ink antialiased">
+  <div class="mx-auto flex min-h-[100dvh] max-w-[1500px] flex-col px-3 py-3 sm:px-5 sm:py-5 lg:px-8">
+    <header class="mb-3 flex items-center justify-between rounded-2xl border border-white/70 bg-white/90 px-4 py-3 shadow-sm backdrop-blur sm:px-6">
+      <div class="flex items-center gap-3">
+        <div class="grid h-11 w-11 place-items-center rounded-xl bg-brand text-lg font-black tracking-tight text-white">EKT</div>
+        <div>
+          <h1 class="font-bold leading-tight sm:text-lg">ИИ-консультант EKT</h1>
+          <p class="text-xs text-slate-500 sm:text-sm">Помогу подобрать товар и собрать корзину</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">
+        <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
+        <span id="connection-label">На связи</span>
+      </div>
+    </header>
+
+    <main class="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <section class="flex min-h-[68vh] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-soft lg:min-h-0" aria-label="Чат с консультантом">
+        <div id="messages" class="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-7 sm:py-7" aria-live="polite" aria-label="Сообщения чата"></div>
+
+        <div id="demo-panel" class="hidden border-t border-slate-100 bg-slate-50 px-4 py-3 sm:px-6">
+          <div class="mb-2 flex items-center justify-between gap-4">
+            <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Сценарий для демонстрации</p>
+            <button id="close-demo" type="button" class="text-xs text-slate-500 hover:text-ink">Закрыть</button>
+          </div>
+          <div id="demo-questions" class="flex gap-2 overflow-x-auto pb-1"></div>
+        </div>
+
+        <div class="border-t border-slate-200 bg-white p-3 sm:p-4">
+          <form id="chat-form" class="flex items-end gap-2">
+            <button id="demo-button" type="button" class="hidden shrink-0 rounded-xl border border-slate-200 px-3 py-3 text-sm font-semibold text-slate-600 transition hover:border-brand hover:text-brand sm:block">Пример диалога</button>
+            <label class="sr-only" for="question">Ваш вопрос</label>
+            <textarea id="question" rows="1" maxlength="8000" required autocomplete="off" placeholder="Например: есть автомат на 16 А?" class="max-h-32 min-h-[48px] flex-1 resize-none rounded-xl border border-slate-300 px-4 py-3 outline-none transition placeholder:text-slate-400 focus:border-brand focus:ring-4 focus:ring-orange-100"></textarea>
+            <button id="send-button" type="submit" class="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand text-white transition hover:bg-brandDark focus:outline-none focus:ring-4 focus:ring-orange-200 disabled:cursor-not-allowed disabled:opacity-50" aria-label="Отправить сообщение">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 4 17 8-17 8 3-8-3-8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7 12h14" stroke="currentColor" stroke-width="2"/></svg>
+            </button>
+          </form>
+          <button id="demo-button-mobile" type="button" class="mt-2 text-left text-xs font-semibold text-brand sm:hidden">Открыть пример диалога</button>
+          <p class="mt-2 text-center text-[11px] text-slate-400">Цены и остатки ориентировочные — уточняйте условия у менеджера EKT</p>
+        </div>
+      </section>
+
+      <div class="space-y-3">
+      <section class="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-soft" aria-labelledby="catalog-title">
+        <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-wider text-brand">Демо-каталог</p>
+            <h2 id="catalog-title" class="mt-1 text-xl font-bold">Популярные товары</h2>
+          </div>
+          <span class="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">пример</span>
+        </div>
+        <div id="catalog-grid" class="grid gap-2 p-3 sm:grid-cols-2 lg:grid-cols-1" aria-live="polite">
+          <p class="px-2 py-4 text-sm text-slate-400">Загружаю товары…</p>
+        </div>
+      </section>
+
+      <aside id="cart-card" class="hidden h-fit overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-soft lg:block" aria-labelledby="cart-title">
+        <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-wider text-brand">Ваш заказ</p>
+            <h2 id="cart-title" class="mt-1 text-xl font-bold">Корзина</h2>
+          </div>
+          <span id="cart-count" class="grid h-9 min-w-9 place-items-center rounded-full bg-orange-50 px-2 text-sm font-bold text-brand">0</span>
+        </div>
+        <div id="cart-empty" class="px-6 py-10 text-center">
+          <div class="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-slate-100 text-slate-400">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 4h2l2.2 10.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 2-1.6L20.5 8H6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="20" r="1" fill="currentColor"/><circle cx="18" cy="20" r="1" fill="currentColor"/></svg>
+          </div>
+          <p class="font-semibold">Корзина пока пуста</p>
+          <p class="mt-1 text-sm text-slate-500">Попросите ассистента подобрать товар</p>
+        </div>
+        <div id="cart-content" class="hidden">
+          <div id="cart-items" class="divide-y divide-slate-100 px-5"></div>
+          <div class="border-t border-slate-100 p-5">
+            <div class="mb-4 flex items-center justify-between">
+              <span class="text-sm text-slate-500">Итого</span>
+              <strong id="cart-total" class="text-xl">0 ₸</strong>
+            </div>
+            <a id="cart-link" href="https://ekt.kz/cart" target="_blank" rel="noopener noreferrer" class="block rounded-xl bg-brand px-4 py-3 text-center font-semibold text-white transition hover:bg-brandDark">Перейти в корзину</a>
+          </div>
+        </div>
+      </aside>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/api.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
