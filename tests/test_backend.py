@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from agent import ShopTools, purchase_confirmed, run_demo_agent, run_openai_agent
 from catalog import Catalog, asset_path, normalize_product
+from guardrails import safe_reply
 from main import app
 
 
@@ -158,7 +159,8 @@ class BackendTests(unittest.TestCase):
                         {"role": "user", "content": "Покажи лампы"},
                     ]})
                     self.assertEqual(answer.status_code, 200)
-        self.assertEqual(observed[0]["content"], "[Платёжные данные удалены]")
+        self.assertEqual(observed, [{"role": "user", "content": "Покажи лампы"}])
+        self.assertNotIn("4400", json.dumps(observed, ensure_ascii=False))
 
     def test_merged_logic_assets_are_used_directly(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -219,7 +221,7 @@ class BackendTests(unittest.TestCase):
         fake = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: next(responses))))
         with patch("openai.OpenAI", return_value=fake):
             answer = run_openai_agent([{"role": "user", "content": "Покажи DEMO-LED-12"}], "one", self.tools, "test-model", "test-key")
-        self.assertEqual(answer, "Готово")
+        self.assertEqual(answer, safe_reply("Покажи DEMO-LED-12", "facts"))
         self.assertEqual(self.tools.get_cart("one"), [])
         self.assertEqual(self.tools.get_cart("other"), [])
 

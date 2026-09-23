@@ -7,9 +7,10 @@ import logging
 import math
 import os
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import RLock
+from threading import BoundedSemaphore, Event, RLock
 from urllib.parse import urlparse
 
 import requests
@@ -17,6 +18,16 @@ import requests
 LOG = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 API_URL = "https://ekt.kz/api/products"
+DETAIL_API_URL = f"{API_URL}/detail"
+DEFAULT_CATALOG_PER_PAGE = 1000
+MAX_CATALOG_PER_PAGE = 1000
+MAX_CATALOG_PAGES = 100
+DETAIL_WORKERS = 6
+MAX_SEARCH_DETAIL_CANDIDATES = 24
+MAX_ANALOG_DETAIL_CANDIDATES = 24
+CATALOG_REQUEST_TIMEOUT = 15
+DETAIL_REQUEST_TIMEOUT = 5
+REQUEST_ATTEMPTS = 2
 
 
 def asset_path(name: str) -> Path:
@@ -51,19 +62,72 @@ def _stock(value):
     return max(0, int(number)) if number is not None else None
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        LOG.warning("Ignoring invalid %s value", name)
+        return default
+
+
+def _normalize_search_text(value) -> str:
+    """Make cable dimensions, Russian letters and punctuation searchable alike."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = text.replace("ё", "е").replace("х", "x")
+    text = re.sub(r"(?<=\d)\s*[,\.]\s*(?=\d)", ".", text)
+    text = re.sub(r"(?<=\d)\s*x\s*(?=\d)", "x", text)
+    text = re.sub(r"[^\w.]+", " ", text, flags=re.UNICODE).replace("_", " ")
+    text = re.sub(r"(?<!\d)\.|\.(?!\d)", " ", text)
+    # Keep useful unit equivalence ("16 А"/"16А") without joining arbitrary words.
+    text = re.sub(
+        r"(?<=\d)\s+(?=(?:ка|ka|ма|ma|а|a|квт|kw|вт|w|кв|kv|в|v|мм|mm|см|cm|м|m)\b)",
+        "",
+        text,
+        flags=re.UNICODE,
+    )
+    return " ".join(text.split())
+
+
+def _search_values(value) -> list[str]:
+    if isinstance(value, dict):
+        result: list[str] = []
+        for key, nested in value.items():
+            result.extend((str(key), *_search_values(nested)))
+        return result
+    if isinstance(value, (list, tuple, set)):
+        result = []
+        for nested in value:
+            result.extend(_search_values(nested))
+        return result
+    return [str(value)] if value is not None else []
+
+
+def _availability_rank(product: dict) -> int:
+    return {"in_stock": 0, "unknown": 1, "out_of_stock": 2}.get(
+        str(product.get("availability") or "unknown"),
+        1,
+    )
+
+
 def normalize_product(raw: dict) -> dict:
     """Map both live API detail records and local demo records to one shape."""
+    if not isinstance(raw, dict):
+        raw = {}
     url = str(raw.get("url") or "")
     parts = urlparse(url).path.strip("/").split("/")
     category_slug = parts[1] if len(parts) > 1 and parts[0] == "catalog" else ""
     category = raw.get("category") or CATEGORY_NAMES.get(category_slug, category_slug.replace("_", " "))
     properties = raw.get("properties") or raw.get("characteristics") or raw.get("specs") or {}
+    if not isinstance(properties, dict):
+        properties = {}
     certificates = raw.get("certificates") or []
     if not certificates and isinstance(properties, dict):
         certificates = [value for key, value in properties.items() if "CERT" in key.upper() and value]
     if not isinstance(certificates, list):
         certificates = [certificates]
-    raw_stock = raw.get("stock", raw.get("quantity"))
+    raw_stock = raw.get("stock")
+    if raw_stock is None:
+        raw_stock = raw.get("quantity")
     stock = _stock(raw_stock)
     stores = raw.get("stores") or []
     if isinstance(raw_stock, dict):
@@ -84,7 +148,10 @@ def normalize_product(raw: dict) -> dict:
         "stock": stock,
         "stores": stores,
         "availability": "in_stock" if stock is not None and stock > 0 else "out_of_stock" if stock == 0 else "unknown",
+        "image": raw.get("image") or "",
+        "offers": raw.get("offers") or [],
         "url": url,
+        "url_api_detail": raw.get("url_api_detail") or "",
     }
 
 
@@ -95,6 +162,9 @@ class Catalog:
         self.products: list[dict] = []
         self.by_article: dict[str, dict] = {}
         self.lock = RLock()
+        self._detail_attempted: set[str] = set()
+        self._detail_inflight: dict[str, Event] = {}
+        self._detail_slots = BoundedSemaphore(DETAIL_WORKERS)
 
     def load(self):
         if not self.demo_mode:
@@ -115,11 +185,30 @@ class Catalog:
         self._set_products([normalize_product(item) for item in items], "demo")
 
     def _set_products(self, products: list[dict], source: str):
+        valid: list[dict] = []
+        seen_articles: set[str] = set()
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            article = str(product.get("article") or "").strip()
+            name = str(product.get("name") or "").strip()
+            key = article.casefold()
+            product_id = product.get("id")
+            missing_live_id = source == "live" and (product_id is None or not str(product_id).strip())
+            if not article or not name or missing_live_id or key in seen_articles:
+                continue
+            seen_articles.add(key)
+            valid.append(product)
+        effective_source = "unavailable" if source == "live" and not valid else source
         with self.lock:
-            self.products = [p for p in products if p["article"] and p["name"]]
+            for event in self._detail_inflight.values():
+                event.set()
+            self._detail_attempted.clear()
+            self._detail_inflight.clear()
+            self.products = valid
             self.by_article = {p["article"].casefold(): p for p in self.products}
-            self.source = source
-        LOG.info("Loaded %s products from %s", len(self.products), source)
+            self.source = effective_source
+        LOG.info("Loaded %s products from %s", len(self.products), effective_source)
 
     def _session(self):
         username = os.getenv("EKT_API_USER", "apiuser")
@@ -131,68 +220,264 @@ class Catalog:
         session.headers["Accept"] = "application/json"
         return session
 
+    @staticmethod
+    def _request_json(session, url: str, *, params: dict, timeout: int):
+        last_error = None
+        for attempt in range(REQUEST_ATTEMPTS):
+            try:
+                response = session.get(url, params=params, timeout=timeout)
+                response.raise_for_status()
+                return response.json()
+            except (requests.RequestException, ValueError) as exc:
+                last_error = exc
+                if attempt + 1 < REQUEST_ATTEMPTS:
+                    LOG.warning("Retrying EKT API request after %s", type(exc).__name__)
+        raise last_error
+
     def _load_live(self):
         session = self._session()
-        pages = max(1, min(10, int(os.getenv("CATALOG_PAGES", "3"))))
-        raw_products: list[dict] = []
+        per_page = _env_int("CATALOG_PER_PAGE", DEFAULT_CATALOG_PER_PAGE)
+        if per_page <= 0:
+            per_page = DEFAULT_CATALOG_PER_PAGE
+        per_page = min(per_page, MAX_CATALOG_PER_PAGE)
+        configured_pages = _env_int("CATALOG_PAGES", 0)
+        pages = min(configured_pages, MAX_CATALOG_PAGES) if configured_pages > 0 else MAX_CATALOG_PAGES
+        products: list[dict] = []
+        seen_fingerprints: set[tuple[tuple[str, str, str], ...]] = set()
+        seen_reported_pages: set[int] = set()
+        received_items = 0
         try:
             for page in range(1, pages + 1):
-                response = session.get(API_URL, params={"page": page}, timeout=8)
-                response.raise_for_status()
-                payload = response.json()
-                items = payload.get("items", []) if isinstance(payload, dict) else payload
+                payload = self._request_json(
+                    session,
+                    API_URL,
+                    params={"page": page, "per_page": per_page},
+                    timeout=CATALOG_REQUEST_TIMEOUT,
+                )
+                if not isinstance(payload, dict):
+                    raise ValueError("Unexpected EKT catalog response")
+                items = payload.get("items", [])
                 if not isinstance(items, list):
                     raise ValueError("Unexpected EKT catalog response")
                 if not items:
                     break
-                raw_products.extend(items)
-                page_size = int(payload.get("per_page", len(items))) if isinstance(payload, dict) else len(items)
-                if len(items) < page_size:
+
+                reported_page = payload.get("page")
+                if isinstance(reported_page, int):
+                    if reported_page in seen_reported_pages:
+                        LOG.warning("Stopping EKT pagination after repeated page %s", reported_page)
+                        break
+                    seen_reported_pages.add(reported_page)
+                fingerprint = tuple(
+                    (
+                        str(item.get("id") or ""),
+                        str(item.get("article") or ""),
+                        str(item.get("name") or ""),
+                    )
+                    if isinstance(item, dict)
+                    else ("", "", repr(item))
+                    for item in items
+                )
+                if fingerprint in seen_fingerprints:
+                    LOG.warning("Stopping EKT pagination after duplicate page content")
                     break
+                seen_fingerprints.add(fingerprint)
+
+                for item in items:
+                    normalized = normalize_product(item)
+                    if (
+                        normalized["id"] is not None
+                        and str(normalized["id"]).strip()
+                        and normalized["article"]
+                        and normalized["name"]
+                    ):
+                        products.append(normalized)
+                received_items += len(items)
+                try:
+                    response_page_size = int(payload.get("per_page", per_page))
+                except (TypeError, ValueError):
+                    response_page_size = per_page
+                if response_page_size <= 0:
+                    response_page_size = per_page
+                if len(items) < response_page_size:
+                    try:
+                        total_count = int(payload.get("count"))
+                    except (TypeError, ValueError):
+                        total_count = None
+                    if total_count is None or received_items >= total_count:
+                        break
         finally:
             session.close()
 
-        def enrich(item):
-            if not item.get("id"):
-                return normalize_product(item)
-            try:
-                with self._session() as detail_session:
-                    response = detail_session.get(f"{API_URL}/detail", params={"id": item["id"]}, timeout=8)
-                    response.raise_for_status()
-                    detail = response.json()
-                return normalize_product({**item, **detail})
-            except (requests.RequestException, ValueError) as exc:
-                LOG.warning("Could not load product detail %s: %s", item.get("id"), exc)
-                return normalize_product(item)
+        return products
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = [pool.submit(enrich, item) for item in raw_products]
-            return [future.result() for future in futures]
+    @staticmethod
+    def _detail_key(product: dict) -> str | None:
+        product_id = product.get("id")
+        if product_id is None or str(product_id).strip() == "":
+            return None
+        return str(product_id)
+
+    def _fetch_detail(self, product: dict) -> dict | None:
+        product_id = product.get("id")
+        session = None
+        try:
+            with self._detail_slots:
+                session = self._session()
+                detail = self._request_json(
+                    session,
+                    DETAIL_API_URL,
+                    params={"id": product_id},
+                    timeout=DETAIL_REQUEST_TIMEOUT,
+                )
+            if not isinstance(detail, dict) or not detail:
+                raise ValueError("Unexpected EKT product detail response")
+            detail_id = detail.get("id")
+            if detail_id is not None and str(detail_id) != str(product_id):
+                raise ValueError("EKT product detail id does not match")
+            return detail
+        except (requests.RequestException, TypeError, ValueError) as exc:
+            LOG.warning("Could not load product detail %s: %s", product_id, exc)
+            return None
+        finally:
+            if session is not None:
+                session.close()
+
+    def _ensure_detail(self, product: dict) -> dict:
+        if self.source != "live":
+            return product
+        key = self._detail_key(product)
+        if key is None:
+            return product
+
+        with self.lock:
+            if key in self._detail_attempted:
+                return product
+            event = self._detail_inflight.get(key)
+            owner = event is None
+            if owner:
+                event = Event()
+                self._detail_inflight[key] = event
+        if not owner:
+            event.wait(DETAIL_REQUEST_TIMEOUT * REQUEST_ATTEMPTS + 2)
+            return product
+
+        try:
+            detail = self._fetch_detail(product)
+            if detail is not None:
+                merged = dict(product)
+                merged.update(detail)
+                # A detail quantity is authoritative even when it explicitly becomes unknown.
+                if "quantity" in detail and "stock" not in detail:
+                    merged.pop("stock", None)
+                if not str(merged.get("article") or "").strip():
+                    merged["article"] = product.get("article")
+                if not str(merged.get("name") or "").strip():
+                    merged["name"] = product.get("name")
+                enriched = normalize_product(merged)
+                if enriched["article"] and enriched["name"]:
+                    with self.lock:
+                        old_key = product["article"].casefold()
+                        product.clear()
+                        product.update(enriched)
+                        new_key = product["article"].casefold()
+                        if old_key != new_key and self.by_article.get(old_key) is product:
+                            del self.by_article[old_key]
+                        self.by_article[new_key] = product
+        finally:
+            with self.lock:
+                self._detail_attempted.add(key)
+                finished = self._detail_inflight.pop(key, None)
+                if finished is not None:
+                    finished.set()
+        return product
+
+    def _enrich_details(self, products: list[dict]) -> list[dict]:
+        if self.source != "live" or not products:
+            return products
+        with ThreadPoolExecutor(max_workers=min(DETAIL_WORKERS, len(products))) as pool:
+            return list(pool.map(self._ensure_detail, products))
 
     def search(self, query: str, limit: int = 8) -> list[dict]:
-        words = re.sub(r"(\d)\s+(?=[а-яa-z])", r"\1", query.casefold()).split()
-        if not words:
+        words = _normalize_search_text(query).split()
+        if not words or limit <= 0:
             return []
         with self.lock:
             matches = []
             for product in self.products:
-                details = " ".join(f"{key} {value}" for key, value in product["characteristics"].items()) if isinstance(product["characteristics"], dict) else ""
-                searchable = re.sub(r"(\d)\s+(?=[а-яa-z])", r"\1", f"{product['article']} {product['name']} {product['category']} {details}".casefold())
+                values = [
+                    product.get("article"),
+                    product.get("name"),
+                    product.get("category"),
+                    product.get("description"),
+                    *_search_values(product.get("characteristics")),
+                ]
+                searchable = _normalize_search_text(" ".join(str(value or "") for value in values))
                 if all(word in searchable for word in words):
                     matches.append(product)
-        matches.sort(key=lambda p: (p["availability"] != "in_stock", p["article"].casefold()))
+        matches.sort(key=lambda p: (_availability_rank(p), p["article"].casefold()))
+
+        if self.source == "live" and matches:
+            target = min(limit, len(matches))
+            budget = min(len(matches), MAX_SEARCH_DETAIL_CANDIDATES)
+            enriched = min(target, budget)
+            self._enrich_details(matches[:enriched])
+            while (
+                enriched < budget
+                and sum(product["availability"] == "in_stock" for product in matches[:enriched]) < target
+            ):
+                batch_end = min(budget, enriched + DETAIL_WORKERS)
+                self._enrich_details(matches[enriched:batch_end])
+                enriched = batch_end
+
+        matches.sort(key=lambda p: (_availability_rank(p), p["article"].casefold()))
         return matches[:limit]
 
     def get(self, article: str) -> dict | None:
         with self.lock:
-            return self.by_article.get(article.casefold().strip())
+            product = self.by_article.get(article.casefold().strip())
+        return self._ensure_detail(product) if product is not None else None
 
     def analogs(self, article: str, limit: int = 5) -> list[dict]:
+        if limit <= 0:
+            return []
         original = self.get(article)
         if not original:
             return []
         with self.lock:
-            matches = [p for p in self.products if p["article"] != original["article"] and p["category"] == original["category"] and p["availability"] == "in_stock"]
+            candidates = [
+                product
+                for product in self.products
+                if product["article"] != original["article"]
+                and product["category"] == original["category"]
+            ]
+
+        if self.source == "live" and candidates:
+            original_words = set(_normalize_search_text(original.get("name")).split())
+
+            def summary_rank(product):
+                product_words = set(_normalize_search_text(product.get("name")).split())
+                return (
+                    _availability_rank(product),
+                    -len(original_words & product_words),
+                    product["article"].casefold(),
+                )
+
+            candidates.sort(key=summary_rank)
+            candidate_budget = min(
+                len(candidates),
+                MAX_ANALOG_DETAIL_CANDIDATES,
+                max(DETAIL_WORKERS, limit * 3),
+            )
+            self._enrich_details(candidates[:candidate_budget])
+
+        matches = [
+            product
+            for product in candidates
+            if product["category"] == original["category"]
+            and product["availability"] == "in_stock"
+        ]
+
         def similarity(product):
             original_specs = {str(key).casefold(): str(value).casefold() for key, value in original["characteristics"].items()}
             product_specs = {str(key).casefold(): str(value).casefold() for key, value in product["characteristics"].items()}
