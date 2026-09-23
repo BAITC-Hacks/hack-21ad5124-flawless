@@ -24,6 +24,7 @@ ARTICLE_ACTIONS = {
     "remove_from_cart",
 }
 MAX_ACTIONS = 3
+MAX_UI_QUANTITY = 10_000
 
 
 class ChatAction(BaseModel):
@@ -72,6 +73,24 @@ COPY = {
         "remove_from_cart": ("Тауарды жою", "{product} тауарын себеттен алып таста"),
         "clear_cart": ("Себетті тазалау", "Себетті тазала"),
     },
+    "en": {
+        "add_to_cart": ("Add to cart", "Add {qty} × {product} to the cart"),
+        "show_analogs": ("Similar products", "Show alternatives to {product}"),
+        "show_details": ("Specifications", "Show the specifications for {product}"),
+        "show_availability": ("Availability by city", "Show warehouse availability for {product}"),
+        "show_certificates": ("Certificates", "Show certificates for {product}"),
+        "compare": ("Compare", "Compare the found products by specification"),
+        "delivery": ("Delivery", "What are the delivery terms?"),
+        "payment": ("Payment", "What payment methods are available?"),
+        "cheaper_options": ("Find a cheaper option", "Find a cheaper alternative to {product}"),
+        "other_brand": ("Another brand", "Show a similar product from another manufacturer instead of {product}"),
+        "clarify": ("Refine requirements", "Help me refine the product requirements"),
+        "contact_manager": ("Ask a manager", "How can I contact an EKT manager?"),
+        "continue_search": ("Continue searching", "Help me find another product"),
+        "change_quantity": ("Change quantity", "Change the quantity of {product} in the cart to {qty}"),
+        "remove_from_cart": ("Remove item", "Remove {product} from the cart"),
+        "clear_cart": ("Clear cart", "Clear the cart"),
+    },
 }
 
 
@@ -97,8 +116,21 @@ class ActionState:
             self.observed_articles.update(item["article"] for item in result.get("cart", []) if isinstance(item, dict) and isinstance(item.get("article"), str))
 
 
-def answer_language(reply: str) -> Literal["ru", "kk"]:
-    return "kk" if re.search(r"[әғқңөұүһі]|\b(?:қанша|қалай|керек|рахмет|иә|жоқ|дана|себет|тауар|бар)\b", reply.casefold()) else "ru"
+def answer_language(reply: str, latest: str = "") -> Literal["ru", "kk", "en"]:
+    """Infer action-copy language without treating a Latin SKU as English context."""
+    context = f"{reply} {latest}".casefold()
+    if re.search(r"[әғқңөұүһі]|\b(?:қанша|қалай|керек|рахмет|иә|жоқ|дана|себет|тауар|бар)\b", context):
+        return "kk"
+    if not re.search(r"[а-яё]", context):
+        without_skus = re.sub(r"(?<![\w-])(?=[\w./+\-]*\d)[\w./+\-]+(?![\w-])", " ", context)
+        english_words = re.findall(r"\b[a-z]{2,}\b", without_skus)
+        common_words = {
+            "hello", "hi", "show", "find", "add", "cart", "available", "product", "item",
+            "compare", "delivery", "payment", "what", "how", "please", "remove", "clear",
+        }
+        if len(english_words) >= 2 or any(word in common_words for word in english_words):
+            return "en"
+    return "ru"
 
 
 def _mentioned_articles(text: str, catalog: Catalog) -> list[str]:
@@ -107,33 +139,11 @@ def _mentioned_articles(text: str, catalog: Catalog) -> list[str]:
             if re.search(rf"(?<![\w-]){re.escape(product['article'].casefold())}(?![\w-])", lowered)]
 
 
-def demo_action_proposals(latest: str, reply: str, catalog: Catalog, cart_before: list[dict], cart_after: list[dict]) -> list[dict]:
-    """Offer a small deterministic set when no model action tool was used."""
-    before = {item["article"]: item["qty"] for item in cart_before}
-    changed = [item["article"] for item in cart_after if item["qty"] > before.get(item["article"], 0)]
-    if changed:
-        return [{"type": "change_quantity", "article": changed[0]},
-                {"type": "remove_from_cart", "article": changed[0]}, {"type": "continue_search"}]
-
-    mentioned = _mentioned_articles(latest, catalog) or _mentioned_articles(reply, catalog)
-    if len(mentioned) == 1:
-        article = mentioned[0]
-        product = catalog.get(article)
-        if product and product["stock"] is not None and product["stock"] > 0:
-            return [{"type": kind, "article": article} for kind in
-                    ("add_to_cart", "show_analogs", "show_details", "show_availability", "show_certificates")]
-        return [{"type": kind, "article": article} for kind in
-                ("show_analogs", "show_availability", "other_brand")] + [{"type": "continue_search"}]
-    if len(mentioned) >= 2:
-        return [{"type": "compare"}, {"type": "clarify"}, {"type": "continue_search"}]
-    return []
-
-
 def _brand(product: dict) -> str:
     specs = product.get("characteristics") or {}
     if isinstance(specs, dict):
         for key, value in specs.items():
-            if any(word in str(key).casefold() for word in ("brand", "бренд", "марка", "manufacturer")) and isinstance(value, str):
+            if any(word in str(key).casefold() for word in ("brand", "бренд", "марка", "manufacturer", "производитель")) and isinstance(value, str):
                 return value.casefold().strip()
     return ""
 
@@ -141,7 +151,7 @@ def _brand(product: dict) -> str:
 def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catalog,
                   cart_before: list[dict], cart_after: list[dict], observed_articles: set[str] | None = None) -> list[ChatAction]:
     """Allowlist actions and derive every user-facing field from trusted data."""
-    language = answer_language(reply)
+    language = answer_language(reply, latest)
     reply_lower = reply.casefold()
     observed = {article.casefold() for article in observed_articles} if observed_articles is not None else None
     cart = {item["article"]: item["qty"] for item in cart_after}
@@ -150,7 +160,16 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
     visible = _mentioned_articles(latest + " " + reply, catalog)
     if observed is not None:
         visible = [article for article in visible if article.casefold() in observed]
-    candidates = set(visible) | ({article for article in observed_articles} if observed_articles is not None else set())
+    # One SKU may arrive from the model, tools, and user text in different case.
+    # Canonicalize through the catalog so it can never look like two products.
+    candidate_articles = [*visible, *(observed_articles or set())]
+    candidates_by_key: dict[str, str] = {}
+    for candidate in candidate_articles:
+        product = catalog.get(candidate)
+        if product:
+            canonical = product["article"]
+            candidates_by_key.setdefault(canonical.casefold(), canonical)
+    candidates = set(candidates_by_key.values())
     result: list[ChatAction] = []
     seen_types: set[str] = set()
 
@@ -180,7 +199,7 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
         qty = None
         if kind == "add_to_cart":
             stock = product["stock"]
-            max_qty = stock - cart.get(article, 0) if type(stock) is int else 0
+            max_qty = min(MAX_UI_QUANTITY, stock - cart.get(article, 0)) if type(stock) is int else 0
             if max_qty <= 0:
                 continue
             qty = 1
@@ -191,7 +210,9 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
                 continue
         elif kind == "show_details":
             specs = product.get("characteristics") or {}
-            if isinstance(specs, dict) and any(str(key).casefold() in reply_lower for key in specs if key):
+            if not isinstance(specs, dict) or not specs:
+                continue
+            if any(str(key).casefold() in reply_lower for key in specs if key):
                 continue
         elif kind == "show_availability":
             stores = product.get("stores") or []
@@ -235,7 +256,7 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
         elif kind == "change_quantity":
             if article not in cart or not product or type(product["stock"]) is not int or product["stock"] < 1:
                 continue
-            qty, max_qty = cart[article], product["stock"]
+            qty, max_qty = cart[article], min(MAX_UI_QUANTITY, product["stock"])
         elif kind == "remove_from_cart" and article not in cart:
             continue
         elif kind == "clear_cart" and not cart:

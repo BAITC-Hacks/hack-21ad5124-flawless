@@ -1,6 +1,7 @@
 const SESSION_STORAGE_KEY = 'ekt-chat-session-id';
 const MAX_API_MESSAGES = 40;
-const CHAT_TIMEOUT_MS = 25_000;
+// Covers the bounded AI tool cycle plus lazy reads from the live EKT catalog.
+const CHAT_TIMEOUT_MS = 60_000;
 
 function createSessionId() {
   try {
@@ -25,6 +26,7 @@ function getSessionId() {
 }
 
 const sessionId = getSessionId();
+let cartToken = null;
 const history = [];
 let waiting = false;
 let selectedPhotoUrl = null;
@@ -43,7 +45,8 @@ const ACTION_LABELS = {
     delivery: 'Доставка', payment: 'Оплата', cheaper_options: 'Подобрать дешевле',
     other_brand: 'Другой производитель', clarify: 'Уточнить параметры', contact_manager: 'Спросить менеджера',
     continue_search: 'Продолжить поиск', change_quantity: 'Изменить количество',
-    remove_from_cart: 'Удалить товар', clear_cart: 'Очистить корзину', more: 'Ещё', confirm: 'Подтвердить'
+    remove_from_cart: 'Удалить товар', clear_cart: 'Очистить корзину', more: 'Ещё', confirm: 'Подтвердить',
+    decrease: 'Уменьшить количество', increase: 'Увеличить количество', cancel: 'Отменить'
   },
   kk: {
     add_to_cart: 'Себетке қосу', show_analogs: 'Ұқсас нұсқалар', show_details: 'Сипаттамалар',
@@ -51,7 +54,17 @@ const ACTION_LABELS = {
     delivery: 'Жеткізу', payment: 'Төлем', cheaper_options: 'Арзанырақ нұсқа',
     other_brand: 'Басқа өндіруші', clarify: 'Параметрлерді нақтылау', contact_manager: 'Менеджерден сұрау',
     continue_search: 'Іздеуді жалғастыру', change_quantity: 'Санын өзгерту',
-    remove_from_cart: 'Тауарды жою', clear_cart: 'Себетті тазалау', more: 'Тағы', confirm: 'Растау'
+    remove_from_cart: 'Тауарды жою', clear_cart: 'Себетті тазалау', more: 'Тағы', confirm: 'Растау',
+    decrease: 'Санын азайту', increase: 'Санын көбейту', cancel: 'Бас тарту'
+  },
+  en: {
+    add_to_cart: 'Add to cart', show_analogs: 'Similar products', show_details: 'Specifications',
+    show_availability: 'Availability by city', show_certificates: 'Certificates', compare: 'Compare',
+    delivery: 'Delivery', payment: 'Payment', cheaper_options: 'Find a cheaper option',
+    other_brand: 'Another brand', clarify: 'Refine requirements', contact_manager: 'Ask a manager',
+    continue_search: 'Continue searching', change_quantity: 'Change quantity',
+    remove_from_cart: 'Remove item', clear_cart: 'Clear cart', more: 'More', confirm: 'Confirm',
+    decrease: 'Decrease quantity', increase: 'Increase quantity', cancel: 'Cancel'
   }
 };
 
@@ -111,7 +124,8 @@ function addMessage(role, content, options = {}) {
 }
 
 function responseLanguage(text) {
-  return /[әғқңөұүһі]|\b(?:бар|қанша|калай|қалай|керек|рахмет|иә|жоқ|дана|себет|тауар)\b/i.test(text) ? 'kk' : 'ru';
+  if (/[әғқңөұүһі]|\b(?:бар|қанша|калай|қалай|керек|рахмет|иә|жоқ|дана|себет|тауар)\b/i.test(text)) return 'kk';
+  return /[а-яё]/i.test(text) ? 'ru' : 'en';
 }
 
 function actionMessage(action, quantity, language) {
@@ -120,7 +134,9 @@ function actionMessage(action, quantity, language) {
   }
   const article = String(action.article || '').trim();
   if (action.type === 'add_to_cart') {
-    return language === 'kk' ? `${article} тауарынан ${quantity} дана себетке қос` : `Добавь ${quantity} шт ${article} в корзину`;
+    if (language === 'kk') return `${article} тауарынан ${quantity} дана себетке қос`;
+    if (language === 'en') return `Add ${quantity} × ${article} to the cart`;
+    return `Добавь ${quantity} шт ${article} в корзину`;
   }
   return String(action.prompt || action.label || ACTION_LABELS[language][action.type] || '').trim();
 }
@@ -131,16 +147,17 @@ function createQuantityControl(action, language) {
   const reportedMax = Number(action.max_qty);
   const max = Number.isSafeInteger(reportedMax) && reportedMax > 0 ? reportedMax : 1;
   let quantity = Math.max(1, Math.min(max, Number(action.qty) || 1));
+  const labels = ACTION_LABELS[language];
   control.innerHTML = `
-    <button type="button" class="quantity-minus grid h-8 w-8 place-items-center rounded text-lg font-bold text-ektDark hover:bg-ektLight" aria-label="Уменьшить количество">−</button>
+    <button type="button" class="quantity-minus grid h-8 w-8 place-items-center rounded text-lg font-bold text-ektDark hover:bg-ektLight" aria-label="${labels.decrease}">−</button>
     <span class="quantity-value min-w-8 text-center text-sm font-bold text-ektDark"></span>
-    <button type="button" class="quantity-plus grid h-8 w-8 place-items-center rounded text-lg font-bold text-ektDark hover:bg-ektLight" aria-label="Увеличить количество">+</button>
+    <button type="button" class="quantity-plus grid h-8 w-8 place-items-center rounded text-lg font-bold text-ektDark hover:bg-ektLight" aria-label="${labels.increase}">+</button>
     <button type="button" class="quantity-confirm h-8 rounded bg-accent px-3 text-xs font-bold text-ektDark hover:bg-yellow-400"></button>
-    <button type="button" class="quantity-cancel grid h-8 w-7 place-items-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Отменить">×</button>`;
+    <button type="button" class="quantity-cancel grid h-8 w-7 place-items-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="${labels.cancel}">×</button>`;
   const value = control.querySelector('.quantity-value');
   const refresh = () => { value.textContent = quantity; };
   refresh();
-  control.querySelector('.quantity-confirm').textContent = ACTION_LABELS[language].confirm;
+  control.querySelector('.quantity-confirm').textContent = labels.confirm;
   control.querySelector('.quantity-minus').addEventListener('click', () => { quantity = Math.max(1, quantity - 1); refresh(); });
   control.querySelector('.quantity-plus').addEventListener('click', () => { quantity = Math.min(max, quantity + 1); refresh(); });
   control.querySelector('.quantity-confirm').addEventListener('click', () => sendMessage(actionMessage(action, quantity, language)));
@@ -301,7 +318,8 @@ async function askAssistant() {
       signal: controller.signal,
       body: JSON.stringify({
         session_id: sessionId,
-        messages: getApiMessages()
+        messages: getApiMessages(),
+        cart_token: cartToken
       })
     });
     if (!response.ok) {
@@ -316,6 +334,7 @@ async function askAssistant() {
       error.kind = 'invalid-response';
       throw error;
     }
+    cartToken = typeof data.cart_token === 'string' ? data.cart_token : cartToken;
     elements.connection.textContent = 'На связи';
     return data;
   } finally {

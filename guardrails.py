@@ -283,6 +283,114 @@ def _grounded_stocks(traces: list[dict]) -> set[int]:
     return stocks
 
 
+_CART_EDIT_SUCCESS_PATTERNS = {
+    "change_quantity": (
+        r"\bколичеств\w*(?:\s+[^.!?;\n]{0,80})?\s+(?:изменен\w*|обновлен\w*|установлен\w*)\b",
+        r"\b(?:изменил\w*|обновил\w*|установил\w*)\s+количеств\w*\b",
+        r"\bсан(?:ы|ын)?(?:\s+[^.!?;\n]{0,80})?\s+(?:өзгертілді|жаңартылды|орнатылды)\b",
+        r"\bquantity(?:\s+[^.!?;\n]{0,80})?\s+(?:has\s+been\s+)?(?:changed|updated|set)\b",
+        r"\b(?:changed|updated|set)\s+(?:the\s+)?quantity\b",
+    ),
+    "remove_from_cart": (
+        r"\b(?:товар\s+)?(?:удалён|удален|убран)(?:\s+[^.!?;\n]{0,80})?\s+из\s+корзин\w*\b",
+        r"\bя\s+(?:удалил\w*|убрал\w*)\b",
+        r"\bсебеттен(?:\s+[^.!?;\n]{0,80})?\s+(?:алынды|жойылды|алып\s+тасталды)\b",
+        r"\bremoved(?:\s+[^.!?;\n]{0,80})?\s+from\s+(?:the\s+)?cart\b",
+    ),
+    "clear_cart": (
+        r"\bкорзин\w*\s+(?:полностью\s+)?(?:очищен\w*|очистил\w*)\b",
+        r"\b(?:очистил\w*|опустошил\w*)\s+корзин\w*\b",
+        r"\bсебет\s+(?:тазаланды|тазартылды)\b",
+        r"\bcart\s+(?:has\s+been\s+|was\s+)?(?:cleared|emptied)\b",
+    ),
+}
+
+_CART_EDIT_NEGATION_PATTERNS = {
+    "change_quantity": r"(?:\bне\s+(?:был\w*\s+)?(?:изменен\w*|обновлен\w*|установлен\w*)|\bне\s+удалось\s+(?:изменить|обновить|установить)|\b(?:not|wasn't|could\s+not|failed\s+to)\s+(?:change|update|set))",
+    "remove_from_cart": r"(?:\bне\s+(?:был\w*\s+)?(?:удалён|удален|убран)|\bне\s+удалось\s+(?:удалить|убрать)|\b(?:not|wasn't|could\s+not|failed\s+to)\s+remove)",
+    "clear_cart": r"(?:\bне\s+(?:был\w*\s+)?очищен\w*|\bне\s+удалось\s+очистить|\b(?:not|wasn't|could\s+not|failed\s+to)\s+(?:clear|empty))",
+}
+
+
+def _successful_cart_edits(traces: list[dict]) -> dict[str, list[dict]]:
+    successful = {name: [] for name in _CART_EDIT_SUCCESS_PATTERNS}
+    for trace in traces:
+        name = trace.get("name")
+        result = trace.get("result")
+        if name not in successful or not isinstance(result, dict) or result.get("ok") is not True:
+            continue
+        article = result.get("article")
+        if name == "change_quantity":
+            qty = result.get("qty")
+            if not isinstance(article, str) or not article.strip() or type(qty) is not int or qty < 1:
+                continue
+        elif name == "remove_from_cart":
+            if not isinstance(article, str) or not article.strip():
+                continue
+        elif name == "clear_cart" and result.get("cart") != []:
+            continue
+        successful[name].append(result)
+    return successful
+
+
+def _positive_cart_edit_claims(reply: str) -> dict[str, list[str]]:
+    claims = {name: [] for name in _CART_EDIT_SUCCESS_PATTERNS}
+    for sentence in re.split(r"[.!?;\n]+", reply.casefold()):
+        sentence = " ".join(sentence.split())
+        if not sentence:
+            continue
+        for name, patterns in _CART_EDIT_SUCCESS_PATTERNS.items():
+            if any(re.search(pattern, sentence) for pattern in patterns) and not re.search(
+                _CART_EDIT_NEGATION_PATTERNS[name], sentence
+            ):
+                claims[name].append(sentence)
+    return claims
+
+
+def _mentioned_grounded_articles(sentence: str, traces: list[dict]) -> set[str]:
+    mentioned = set()
+    for article in _grounded_articles(traces):
+        if re.search(rf"(?<![\w-]){re.escape(article)}(?![\w-])", sentence):
+            mentioned.add(article)
+    return mentioned
+
+
+def _cart_edit_claims_are_grounded(reply: str, traces: list[dict]) -> bool:
+    successful = _successful_cart_edits(traces)
+    claims = _positive_cart_edit_claims(reply)
+    for name, sentences in claims.items():
+        if not sentences or not successful[name]:
+            if sentences:
+                return False
+            continue
+        result_articles = {
+            result["article"].casefold().strip()
+            for result in successful[name]
+            if isinstance(result.get("article"), str)
+        }
+        result_quantities = {
+            result["qty"]
+            for result in successful[name]
+            if type(result.get("qty")) is int
+        }
+        for sentence in sentences:
+            mentioned = _mentioned_grounded_articles(sentence, traces)
+            if mentioned and not mentioned.issubset(result_articles):
+                return False
+            if name == "change_quantity":
+                claimed_quantities = {
+                    int(value)
+                    for value in re.findall(r"(?<![\w-])(\d+)\s*(?:шт\.?|дана|units?)(?!\w)", sentence)
+                }
+                claimed_quantities.update(
+                    int(value)
+                    for value in re.findall(r"\b(?:на|to)\s+(\d+)(?![\w-])", sentence)
+                )
+                if claimed_quantities and not claimed_quantities.issubset(result_quantities):
+                    return False
+    return True
+
+
 def guard_model_reply(reply: str, user_text: str, traces: list[dict], system_prompt: str) -> str:
     reply = str(reply or "").strip()
     if not reply:
@@ -334,7 +442,9 @@ def guard_model_reply(reply: str, user_text: str, traces: list[dict], system_pro
         )
         for trace in traces
     )
-    if _requires_product_lookup(user_text) and not successful_product_trace:
+    successful_cart_edits = _successful_cart_edits(traces)
+    has_successful_cart_edit = any(successful_cart_edits.values())
+    if _requires_product_lookup(user_text) and not successful_product_trace and not has_successful_cart_edit:
         return safe_reply(user_text, "facts")
     grounded_products = _grounded_products(traces)
     if successful_product_trace and _requires_product_lookup(user_text):
@@ -377,6 +487,8 @@ def guard_model_reply(reply: str, user_text: str, traces: list[dict], system_pro
     ))
     successful_add = any(trace.get("name") == "add_to_cart" and isinstance(trace.get("result"), dict) and trace["result"].get("ok") for trace in traces)
     if claims_cart_mutation and not successful_add:
+        return safe_reply(user_text, "facts")
+    if not _cart_edit_claims_are_grounded(reply, traces):
         return safe_reply(user_text, "facts")
 
     return reply

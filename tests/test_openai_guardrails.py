@@ -239,6 +239,51 @@ class OpenAIGuardrailTests(unittest.TestCase):
         self.assertLessEqual(len(calls), len(repeated_calls))
         self.assertEqual(answer, safe_reply(user_text, "tools"))
 
+    def test_three_operational_rounds_end_with_one_tool_free_grounded_final(self):
+        user_text = "Подбери аналог для DEMO-LED-12."
+        model_messages = [
+            FakeMessage(tool_calls=[self.tool_call(
+                "search_products", {"query": "DEMO-LED-12"}, "search_1",
+            )]),
+            FakeMessage(tool_calls=[self.tool_call(
+                "get_product", {"article": "DEMO-LED-12"}, "details_2",
+            )]),
+            FakeMessage(tool_calls=[self.tool_call(
+                "find_analogs", {"article": "DEMO-LED-12"}, "analogs_3",
+            )]),
+            FakeMessage(content="Подходящий аналог — DEMO-LED-15."),
+        ]
+
+        with patch.object(self.tools, "dispatch", wraps=self.tools.dispatch) as dispatch:
+            answer, calls = self.run_agent(
+                user_text,
+                model_messages,
+                session_id="forced-final",
+            )
+
+        self.assertEqual(answer, "Подходящий аналог — DEMO-LED-15.")
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(dispatch.call_count, 3)
+        self.assertTrue(all("tools" in request for request in calls[:3]))
+        self.assertNotIn("tools", calls[3])
+        self.assertNotIn("tool_choice", calls[3])
+        self.assertNotIn("parallel_tool_calls", calls[3])
+        self.assertEqual(self.tools.get_cart("forced-final"), [])
+
+    def test_mixed_operational_and_action_calls_are_rejected_without_execution(self):
+        user_text = "Покажи лампы."
+        mixed = FakeMessage(tool_calls=[
+            self.tool_call("search_products", {"query": "лампа"}, "search"),
+            self.tool_call("set_ui_actions", {"actions": []}, "actions"),
+        ])
+
+        with patch.object(self.tools, "dispatch", wraps=self.tools.dispatch) as dispatch:
+            answer, calls = self.run_agent(user_text, [mixed], session_id="mixed")
+
+        self.assertEqual(len(calls), 1)
+        dispatch.assert_not_called()
+        self.assertEqual(answer, safe_reply(user_text, "tools"))
+
 
 if __name__ == "__main__":
     unittest.main()

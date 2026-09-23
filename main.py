@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from agent import CART_LINK, ShopTools, contains_payment_data, run_demo_agent, run_openai_agent
 from cart_state import CartStateCodec, InvalidCartToken
 from catalog import Catalog
-from ui_actions import ActionState, ChatAction, build_actions, demo_action_proposals
+from ui_actions import ActionState, ChatAction, build_actions
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -136,6 +136,11 @@ async def lifespan(app: FastAPI):
     app.state.tools = ShopTools(catalog)
     signing_key = os.getenv("CART_SIGNING_KEY")
     app.state.cart_codec = CartStateCodec(signing_key) if signing_key else None
+    app.state.action_products = {product["article"].casefold(): product for product in catalog.products}
+    action_categories: dict[str, list[dict]] = {}
+    for product in catalog.products:
+        action_categories.setdefault(str(product.get("category") or "").casefold(), []).append(product)
+    app.state.action_categories = action_categories
     app.state.histories = {}
     app.state.last_responses = OrderedDict()
     app.state.history_lock = RLock()
@@ -206,7 +211,6 @@ def demo_questions():
 
 @app.get("/demo-cart", response_class=HTMLResponse)
 def demo_cart(token: str):
-    """Render the signed assistant cart without exposing its state in the URL body."""
     codec: CartStateCodec | None = app.state.cart_codec
     if not codec:
         raise HTTPException(status_code=404)
@@ -217,18 +221,13 @@ def demo_cart(token: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     cart = tools.get_cart(session_id)
     rows = "".join(
-        f"<li><span>{escape(item['name'])} × {item['qty']}</span>"
-        f"<strong>{item['price'] * item['qty']:,.0f} ₸</strong></li>" if item["price"] is not None else
-        f"<li><span>{escape(item['name'])} × {item['qty']}</span><strong>Цена неизвестна</strong></li>"
+        f"<li><span>{escape(item['name'])} × {item['qty']}</span></li>"
         for item in cart
     )
-    total = sum((item["price"] or 0) * item["qty"] for item in cart)
     return HTMLResponse(
-        "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
-        "<title>Корзина ассистента EKT</title><style>body{font:16px/1.5 Arial,sans-serif;max-width:680px;margin:5vh auto;padding:24px;color:#173447}"
-        "li{display:flex;justify-content:space-between;gap:20px;padding:14px 0;border-bottom:1px solid #ddd}ul{padding:0;list-style:none}"
-        "a{color:#07547a}</style><h1>Корзина ассистента EKT</h1><p>Эта корзина не связана с корзиной сайта ekt.kz. Оформление заказа из неё пока недоступно.</p>"
-        f"<ul>{rows}</ul><p><strong>Итого: {total:,.0f} ₸</strong></p><p><a href='/'>Вернуться к чату</a></p></html>",
+        "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Корзина ассистента EKT</title><style>body{font:16px Arial;max-width:680px;margin:5vh auto;padding:24px;color:#173447}li{padding:14px 0;border-bottom:1px solid #ddd}</style>"
+        f"<h1>Корзина ассистента EKT</h1><ul>{rows}</ul><p><a href='/'>Вернуться к чату</a></p></html>",
         headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
 
@@ -279,15 +278,143 @@ def _session_turn_lock(session_id: str) -> RLock:
     return app.state.turn_locks[index]
 
 
+def _action_articles(text: str) -> list[str]:
+    """Resolve article-looking tokens through an O(tokens) in-memory index."""
+    found: list[str] = []
+    products = app.state.action_products
+    for token in re.findall(r"[\w./+\-]{1,128}", str(text or ""), re.UNICODE):
+        product = products.get(token.casefold())
+        if product and product["article"] not in found:
+            found.append(product["article"])
+    return found
+
+
+def _fallback_action_proposals(
+    latest: str,
+    reply: str,
+    cart_before: list[dict],
+    cart_after: list[dict],
+) -> list[dict]:
+    before = {item["article"]: item["qty"] for item in cart_before}
+    after = {item["article"]: item["qty"] for item in cart_after}
+    changed = [article for article, qty in after.items() if before.get(article) != qty]
+    if changed:
+        article = changed[0]
+        return [
+            {"type": "change_quantity", "article": article},
+            {"type": "remove_from_cart", "article": article},
+            {"type": "clear_cart"},
+            {"type": "continue_search"},
+        ]
+
+    lowered = latest.casefold()
+    if any(word in lowered for word in ("достав", "оплат", "услов", "жеткіз", "төлем")):
+        return [{"type": "delivery"}, {"type": "payment"}, {"type": "contact_manager"}]
+
+    # Product actions must come from the server/model answer, which has already
+    # passed guardrails. The raw user text may contain forged SKUs or jailbreaks.
+    mentioned = _action_articles(reply)
+    if len(mentioned) >= 2:
+        return [{"type": "compare"}, {"type": "clarify"}, {"type": "continue_search"}]
+    if len(mentioned) == 1:
+        article = mentioned[0]
+        product = app.state.action_products[article.casefold()]
+        proposals = [
+            {"type": "show_details", "article": article},
+            {"type": "show_availability", "article": article},
+            {"type": "show_analogs", "article": article},
+        ]
+        if type(product.get("stock")) is int and product["stock"] > after.get(article, 0):
+            proposals.insert(0, {"type": "add_to_cart", "article": article})
+        return proposals
+
+    if cart_after:
+        article = cart_after[0]["article"]
+        return [
+            {"type": "change_quantity", "article": article},
+            {"type": "remove_from_cart", "article": article},
+            {"type": "clear_cart"},
+            {"type": "continue_search"},
+        ]
+    return [{"type": "clarify"}, {"type": "contact_manager"}, {"type": "continue_search"}]
+
+
+def _build_safe_actions(
+    proposals: list[dict],
+    reply: str,
+    latest: str,
+    cart_before: list[dict],
+    cart_after: list[dict],
+    action_state: ActionState | None,
+) -> list[ChatAction]:
+    """Validate actions against a tiny in-memory snapshot; never trigger live detail I/O."""
+    # An explicitly supplied ActionState means the OpenAI path ran. Even an
+    # empty observed set is meaningful: no product was grounded by a tool.
+    observed = set(action_state.observed_articles) if action_state is not None else None
+    article_keys: set[str] = set()
+    for article in _action_articles(reply):
+        article_keys.add(article.casefold())
+    for item in [*cart_before, *cart_after, *proposals]:
+        if isinstance(item, dict) and isinstance(item.get("article"), str):
+            article_keys.add(item["article"].casefold())
+    if action_state:
+        article_keys.update(article.casefold() for article in action_state.observed_articles)
+
+    selected: dict[str, dict] = {}
+    observed_products = getattr(action_state, "observed_products", {}) if action_state else {}
+    for key in article_keys:
+        base = app.state.action_products.get(key)
+        if base:
+            selected[key] = dict(base)
+        fact = observed_products.get(key) if isinstance(observed_products, dict) else None
+        if isinstance(fact, dict) and base:
+            selected[key].update(fact)
+
+    needs_analogs = any(
+        isinstance(item, dict) and item.get("type") in {"show_analogs", "cheaper_options", "other_brand"}
+        for item in proposals
+    )
+    if needs_analogs:
+        for product in list(selected.values()):
+            category = str(product.get("category") or "").casefold()
+            if not category:
+                continue
+            for candidate in app.state.action_categories.get(category, ()):
+                key = candidate["article"].casefold()
+                if key not in selected:
+                    selected[key] = dict(candidate)
+                if len(selected) >= 24:
+                    break
+
+    if not selected:
+        # Non-product actions are still validated and localized by build_actions.
+        safe_catalog = Catalog(demo_mode=True)
+        safe_catalog._set_products([], "actions")
+    else:
+        safe_catalog = Catalog(demo_mode=True)
+        safe_catalog._set_products(list(selected.values()), "actions")
+    try:
+        return build_actions(
+            proposals,
+            reply,
+            "",
+            safe_catalog,
+            cart_before,
+            cart_after,
+            observed,
+        )
+    except Exception:
+        LOG.exception("Could not build validated UI actions")
+        return []
+
+
 def _response(
     session_id: str,
     reply: str,
     tools: ShopTools,
-    http_request: Request,
-    latest_user: str = "",
+    actions: list[ChatAction] | None = None,
+    http_request: Request | None = None,
     assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system",
-    cart_before: list[dict] | None = None,
-    action_state: ActionState | None = None,
 ) -> ChatResponse:
     reply = str(reply or "").strip() or "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
     reply = re.sub(r"(?:Ссылка\s*:\s*)?https://ekt\.kz/cart", "", reply, flags=re.IGNORECASE)
@@ -299,25 +426,16 @@ def _response(
     cart = tools.get_cart(session_id)
     codec: CartStateCodec | None = app.state.cart_codec
     token = codec.encode(tools, session_id) if codec else None
-    cart_link = str(http_request.url_for("demo_cart").include_query_params(token=token)) if token and cart else None
-    actions: list[ChatAction] = []
-    if assistant_source in ("openai", "demo"):
-        before = cart_before or []
-        if assistant_source == "openai" and action_state and action_state.called:
-            proposals = action_state.proposed
-            observed = action_state.observed_articles
-        else:
-            proposals = demo_action_proposals(latest_user, reply, app.state.catalog, before, cart)
-            observed = None
-        actions = build_actions(proposals, reply, latest_user, app.state.catalog, before, cart, observed)
-
+    cart_link = None
+    if token and cart:
+        cart_link = str(http_request.url_for("demo_cart").include_query_params(token=token)) if http_request else f"/demo-cart?token={token}"
     return ChatResponse(
         reply=reply,
         cart=cart,
         cart_link=cart_link,
         cart_token=token,
         assistant_source=assistant_source,
-        actions=actions,
+        actions=actions or [],
     )
 
 
@@ -327,21 +445,11 @@ def _finish_turn(
     messages: list[dict],
     reply: str,
     tools: ShopTools,
-    http_request: Request,
+    actions: list[ChatAction] | None = None,
+    http_request: Request | None = None,
     assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system",
-    cart_before: list[dict] | None = None,
-    action_state: ActionState | None = None,
 ) -> ChatResponse:
-    response = _response(
-        session_id,
-        reply,
-        tools,
-        http_request,
-        str(messages[-1].get("content") or "") if messages else "",
-        assistant_source,
-        cart_before,
-        action_state,
-    )
+    response = _response(session_id, reply, tools, actions, http_request, assistant_source)
     with app.state.history_lock:
         app.state.histories[session_id] = _bounded_history(
             [*messages, {"role": "assistant", "content": response.reply}],
@@ -363,21 +471,20 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
             codec.restore(tools, request.cart_token, request.session_id)
         except InvalidCartToken as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    cart_before = tools.get_cart(request.session_id)
-    action_state = ActionState()
     incoming = [message.model_dump() for message in request.messages]
     if incoming[-1]["role"] != "user":
         return _response(
             request.session_id,
             "Последнее сообщение должно быть от клиента.",
             tools,
-            http_request,
+            http_request=http_request,
         )
 
     request_hash = _request_hash(request)
     cached = _cached_response(request.session_id, request_hash)
     if cached is not None:
         return cached
+    cart_before = tools.get_cart(request.session_id)
     latest_user = incoming[-1]
     payment_data = contains_payment_data(latest_user["content"])
     if payment_data:
@@ -391,7 +498,7 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
             messages,
             "Не отправляйте платёжные данные, пароли или коды в чат. Оплата проходит только на сайте при оформлении заказа.",
             tools,
-            http_request,
+            http_request=http_request,
         )
 
     if app.state.catalog.source == "unavailable":
@@ -401,12 +508,15 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
             messages,
             "Каталог EKT временно недоступен. Проверьте товары и цены позже.",
             tools,
-            http_request,
+            http_request=http_request,
             assistant_source="unavailable",
         )
 
     demo_mode = app.state.catalog.demo_mode
     api_key = os.getenv("OPENAI_API_KEY")
+    action_state = ActionState()
+    actions_enabled = False
+    trusted_action_state = False
     try:
         if api_key:
             reply = run_openai_agent(
@@ -417,31 +527,47 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
                 api_key,
                 action_state,
             )
-            assistant_source = "openai"
+            actions_enabled = True
+            trusted_action_state = True
         elif demo_mode:
             reply = run_demo_agent(messages, request.session_id, tools)
-            assistant_source = "demo"
+            actions_enabled = True
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
-            assistant_source = "unavailable"
     except Exception:
         LOG.exception("Chat agent failed")
         if demo_mode:
             reply = run_demo_agent(messages, request.session_id, tools)
-            assistant_source = "demo"
+            action_state = ActionState()
+            actions_enabled = True
+            trusted_action_state = False
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
-            assistant_source = "unavailable"
+    actions: list[ChatAction] = []
+    if actions_enabled:
+        cart_after = tools.get_cart(request.session_id)
+        proposals = (
+            action_state.proposed
+            if trusted_action_state and action_state.called
+            else _fallback_action_proposals(latest_user["content"], reply, cart_before, cart_after)
+        )
+        actions = _build_safe_actions(
+            proposals,
+            reply,
+            latest_user["content"],
+            cart_before,
+            cart_after,
+            action_state if trusted_action_state else None,
+        )
     return _finish_turn(
         request.session_id,
         request_hash,
         messages,
         reply,
         tools,
+        actions,
         http_request,
-        assistant_source,
-        cart_before,
-        action_state,
+        "openai" if api_key and trusted_action_state else "demo" if demo_mode else "unavailable",
     )
 
 

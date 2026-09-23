@@ -11,11 +11,11 @@ from threading import RLock
 from typing import NamedTuple
 
 from catalog import BASE_DIR, Catalog, asset_path
-from guardrails import cart_success_reply, guard_model_reply, requests_internal_instructions, safe_reply
-from ui_actions import ACTION_TYPES, ActionState
+from guardrails import cart_success_reply, detect_language, guard_model_reply, requests_internal_instructions, safe_reply
+from ui_actions import ACTION_TYPES, MAX_UI_QUANTITY, ActionState
 
 CART_LINK = "https://ekt.kz/cart"
-MAX_CART_QUANTITY = 10_000
+MAX_CART_QUANTITY = MAX_UI_QUANTITY
 MAX_TOOL_ROUNDS = 3
 MAX_TOOL_CALLS = 6
 MAX_TOOL_RESULT_CHARS = 12_000
@@ -150,6 +150,28 @@ _OFFER_REFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _ARTICLE_LIKE_RE = re.compile(r"(?<![\w-])[a-zа-яёәіңғүұқөһ0-9]+(?:-[a-zа-яёәіңғүұқөһ0-9]+)+(?![\w-])", re.IGNORECASE)
+_EN_UI_ARTICLE_PATTERN = r"(?P<article>[\w./+\-]{1,100})"
+_EN_ADD_BUTTON_RE = re.compile(
+    rf"Add (?P<qty>\d{{1,5}}) × {_EN_UI_ARTICLE_PATTERN} to the cart",
+    re.IGNORECASE,
+)
+_EN_CHANGE_BUTTON_RE = re.compile(
+    rf"Change the quantity of {_EN_UI_ARTICLE_PATTERN} in the cart to (?P<qty>\d{{1,5}})",
+    re.IGNORECASE,
+)
+_EN_REMOVE_BUTTON_RE = re.compile(
+    rf"Remove {_EN_UI_ARTICLE_PATTERN} from the cart",
+    re.IGNORECASE,
+)
+_EN_CLEAR_BUTTON_RE = re.compile(r"Clear the cart", re.IGNORECASE)
+_DEMO_UI_QUESTION_REPLIES = {
+    "Помоги уточнить параметры товара": "Что именно вы ищете? Укажите категорию товара, бренд и основные характеристики.",
+    "Тауар параметрлерін нақтылауға көмектес": "Қандай тауар керек? Санатын, брендін және негізгі сипаттамаларын жазыңыз.",
+    "Help me refine the product requirements": "What product do you need? Specify its category, brand, and key specifications.",
+    "Помоги найти другой товар": "Какой другой товар найти? Укажите название, бренд или нужную характеристику.",
+    "Басқа тауар табуға көмектес": "Қандай басқа тауарды табу керек? Атауын, брендін немесе сипаттамасын жазыңыз.",
+    "Help me find another product": "What other product should I find? Specify a name, brand, or required specification.",
+}
 
 
 def _quantity_value(raw: str) -> int | None:
@@ -162,6 +184,15 @@ def _quantity_value(raw: str) -> int | None:
         value = int(raw)
         return value if 1 <= value <= MAX_CART_QUANTITY else None
     return None
+
+
+def _english_button_values(pattern: re.Pattern, text: str) -> tuple[str, int | None] | None:
+    """Parse only the exact English command emitted by a trusted UI button."""
+    match = pattern.fullmatch(str(text or "").strip())
+    if not match:
+        return None
+    quantity = match.groupdict().get("qty")
+    return match.group("article"), _quantity_value(quantity) if quantity is not None else None
 
 
 def parse_quantity(text: str) -> QuantityParse:
@@ -344,7 +375,7 @@ def _contextual_product(messages: list[dict], text: str, catalog: Catalog) -> di
 
 
 def _ordinal_product(messages: list[dict], text: str, catalog: Catalog) -> dict | None:
-    """Resolve «первый/2» against at most three products in the latest assistant offer."""
+    """Resolve a numbered choice against the latest three offered products."""
     match = re.fullmatch(
         r"\s*(?:вариант\s*)?(1|2|3|перв(?:ый|ую)|втор(?:ой|ую)|трет(?:ий|ью))\s*[.!]?\s*",
         text,
@@ -353,7 +384,7 @@ def _ordinal_product(messages: list[dict], text: str, catalog: Catalog) -> dict 
     if not match:
         return None
     token = match.group(1).casefold()
-    index = 0 if token.startswith("1") or token.startswith("перв") else 1 if token.startswith("2") or token.startswith("втор") else 2
+    index = 0 if token.startswith(("1", "перв")) else 1 if token.startswith(("2", "втор")) else 2
     previous = _immediate_assistant_text(messages)
     offered = _mentioned_products(previous, catalog)[:3]
     return offered[index] if index < len(offered) else None
@@ -383,9 +414,6 @@ def _resolve_requested_product(messages: list[dict], catalog: Catalog) -> tuple[
             return None, "ambiguous"
     else:
         return mentioned[0], "explicit"
-    ordinal = _ordinal_product(messages, text, catalog)
-    if ordinal:
-        return ordinal, "context"
     contextual = _contextual_product(messages, text, catalog)
     if contextual:
         return contextual, "context"
@@ -467,6 +495,12 @@ def purchase_confirmed(messages: list[dict], catalog: Catalog | None = None) -> 
     text = str(messages[-1].get("content") or "").casefold().strip()
     if not text or _has_cancellation(text) or _is_question_request(text) or _UNSAFE_SELECTOR_RE.search(text):
         return False
+    english_button = _english_button_values(_EN_ADD_BUTTON_RE, text)
+    if english_button:
+        article, quantity = english_button
+        if quantity is None:
+            return False
+        return catalog is None or catalog.get(article) is not None
     if catalog is None and parse_quantity(text).status == "invalid":
         return False
     offered = _offer_target(messages, catalog)
@@ -495,6 +529,13 @@ def cart_intent_matches(messages: list[dict], product: dict, qty: int, catalog: 
     """Bind the model's article and quantity to the client's latest instruction."""
     if not messages or messages[-1].get("role") != "user":
         return False
+    english_button = _english_button_values(
+        _EN_ADD_BUTTON_RE,
+        str(messages[-1].get("content") or ""),
+    )
+    if english_button:
+        article, quantity = english_button
+        return article.casefold() == product["article"].casefold() and quantity == qty
     target, source = _resolve_requested_product(messages, catalog)
     if target is None or target["article"] != product["article"]:
         return False
@@ -586,51 +627,83 @@ class ShopTools:
         }
 
     def change_quantity(self, session_id: str, article: str, qty: int, messages: list[dict]):
+        """Set an existing cart line only for an exact, explicit UI/user command."""
         product = self.catalog.get(article)
-        if not product or type(qty) is not int or not 1 <= qty <= MAX_CART_QUANTITY:
-            return {"error": "Некорректный товар или количество"}
-        latest = str(messages[-1].get("content") or "") if messages and messages[-1].get("role") == "user" else ""
-        identities = (product["article"], product["name"])
-        confirmed = any(
-            re.fullmatch(rf"Измени количество {re.escape(identity)} в корзине на {qty} шт", latest, re.IGNORECASE)
-            or re.fullmatch(rf"Себеттегі {re.escape(identity)} тауар санын {qty} данаға өзгерт", latest, re.IGNORECASE)
-            for identity in identities
-        )
-        if not confirmed:
+        if not product:
+            return {"error": "Товар не найден", "article": article}
+        if type(qty) is not int or not 1 <= qty <= MAX_CART_QUANTITY:
+            return {"error": f"Количество должно быть целым числом от 1 до {MAX_CART_QUANTITY}"}
+        latest = str(messages[-1].get("content") or "").strip() if messages and messages[-1].get("role") == "user" else ""
+        latest = re.sub(re.escape(product["name"]), product["article"], latest, flags=re.IGNORECASE)
+        escaped = re.escape(product["article"])
+        russian = rf"Измени\s+количество\s+{escaped}\s+в\s+корзине\s+на\s+{qty}\s+шт[.! ]*"
+        kazakh = rf"Себеттегі\s+{escaped}\s+тауар\s+санын\s+{qty}\s+данаға\s+өзгерт[.! ]*"
+        english = f"Change the quantity of {product['article']} in the cart to {qty}"
+        if not (
+            re.fullmatch(russian, latest, re.IGNORECASE)
+            or re.fullmatch(kazakh, latest, re.IGNORECASE)
+            or latest.casefold() == english.casefold()
+        ):
             return {"error": "Подтвердите конкретный товар и новое количество"}
         stock = product["stock"]
-        if stock is None or qty > stock:
+        if type(stock) is not int or qty > stock:
             return {"error": "Недостаточно товара на складе", "available": stock}
         with self.lock:
             if product["article"] not in self.carts.get(session_id, {}):
-                return {"error": "Товара нет в корзине"}
+                return {"error": "Товара нет в корзине", "article": product["article"]}
             self.carts[session_id][product["article"]] = qty
-        return {"ok": True, "article": product["article"], "qty": qty, "cart": self.get_cart(session_id)}
+        return {
+            "ok": True,
+            "article": product["article"],
+            "qty": qty,
+            "cart": self.get_cart(session_id),
+            "cart_link": CART_LINK,
+        }
 
     def remove_from_cart(self, session_id: str, article: str, messages: list[dict]):
+        """Remove one exact cart line only after an explicit command."""
         product = self.catalog.get(article)
         if not product:
-            return {"error": "Товар не найден"}
-        latest = str(messages[-1].get("content") or "") if messages and messages[-1].get("role") == "user" else ""
-        identities = (product["article"], product["name"])
-        confirmed = any(
-            re.fullmatch(rf"Удали {re.escape(identity)} из корзины", latest, re.IGNORECASE)
-            or re.fullmatch(rf"{re.escape(identity)} тауарын себеттен алып таста", latest, re.IGNORECASE)
-            for identity in identities
-        )
-        if not confirmed:
+            return {"error": "Товар не найден", "article": article}
+        latest = str(messages[-1].get("content") or "").strip() if messages and messages[-1].get("role") == "user" else ""
+        latest = re.sub(re.escape(product["name"]), product["article"], latest, flags=re.IGNORECASE)
+        escaped = re.escape(product["article"])
+        russian = rf"Удали\s+{escaped}\s+из\s+корзины[.! ]*"
+        kazakh = rf"{escaped}\s+тауарын\s+себеттен\s+алып\s+таста[.! ]*"
+        english = f"Remove {product['article']} from the cart"
+        if not (
+            re.fullmatch(russian, latest, re.IGNORECASE)
+            or re.fullmatch(kazakh, latest, re.IGNORECASE)
+            or latest.casefold() == english.casefold()
+        ):
             return {"error": "Подтвердите удаление конкретного товара"}
         with self.lock:
-            self.carts.get(session_id, {}).pop(product["article"], None)
-        return {"ok": True, "article": product["article"], "cart": self.get_cart(session_id)}
+            cart = self.carts.get(session_id, {})
+            if product["article"] not in cart:
+                return {"error": "Товара нет в корзине", "article": product["article"]}
+            cart.pop(product["article"])
+            for key in list(self.processed_additions):
+                if key[0] == session_id and key[1] == product["article"]:
+                    self.processed_additions.pop(key, None)
+        return {
+            "ok": True,
+            "article": product["article"],
+            "cart": self.get_cart(session_id),
+            "cart_link": CART_LINK,
+        }
 
     def clear_cart(self, session_id: str, messages: list[dict]):
-        latest = str(messages[-1].get("content") or "") if messages and messages[-1].get("role") == "user" else ""
-        if latest.casefold().strip() not in {"очисти корзину", "себетті тазала"}:
+        """Clear the current session cart only after an exact explicit command."""
+        latest = str(messages[-1].get("content") or "").casefold().strip() if messages and messages[-1].get("role") == "user" else ""
+        localized_command = latest.rstrip(".! ") in {"очисти корзину", "себетті тазала"}
+        if not localized_command and not _EN_CLEAR_BUTTON_RE.fullmatch(latest):
             return {"error": "Подтвердите очистку корзины"}
         with self.lock:
             self.carts[session_id] = {}
-        return {"ok": True, "cart": []}
+            for key in list(self.processed_additions):
+                if key[0] == session_id:
+                    self.processed_additions.pop(key, None)
+        return {"ok": True, "cart": [], "cart_link": CART_LINK}
 
     def dispatch(self, name: str, args: dict, session_id: str, messages: list[dict]):
         try:
@@ -674,13 +747,19 @@ class ShopTools:
                     raise ValueError
                 return self.add_to_cart(session_id, article.strip(), args["qty"], messages)
             if name == "change_quantity":
-                if set(args) != {"article", "qty"} or not isinstance(args["article"], str):
+                if set(args) != {"article", "qty"}:
                     raise ValueError
-                return self.change_quantity(session_id, args["article"].strip(), args["qty"], messages)
+                article = args["article"]
+                if not isinstance(article, str) or not article.strip() or len(article) > 128:
+                    raise ValueError
+                return self.change_quantity(session_id, article.strip(), args["qty"], messages)
             if name == "remove_from_cart":
-                if set(args) != {"article"} or not isinstance(args["article"], str):
+                if set(args) != {"article"}:
                     raise ValueError
-                return self.remove_from_cart(session_id, args["article"].strip(), messages)
+                article = args["article"]
+                if not isinstance(article, str) or not article.strip() or len(article) > 128:
+                    raise ValueError
+                return self.remove_from_cart(session_id, article.strip(), messages)
             if name == "clear_cart":
                 if args:
                     raise ValueError
@@ -743,8 +822,10 @@ TOOLS = [
     _function_tool(
         "change_quantity",
         "Установить новое количество товара в корзине только по явной команде клиента.",
-        {"article": {"type": "string", "minLength": 1, "maxLength": 128},
-         "qty": {"type": "integer", "minimum": 1, "maximum": MAX_CART_QUANTITY}},
+        {
+            "article": {"type": "string", "minLength": 1, "maxLength": 128},
+            "qty": {"type": "integer", "minimum": 1, "maximum": MAX_CART_QUANTITY},
+        },
         ["article", "qty"],
     ),
     _function_tool(
@@ -753,21 +834,32 @@ TOOLS = [
         {"article": {"type": "string", "minLength": 1, "maxLength": 128}},
         ["article"],
     ),
-    _function_tool("clear_cart", "Очистить корзину только по явной команде клиента.", {}, []),
+    _function_tool(
+        "clear_cart",
+        "Очистить корзину только по явной команде клиента.",
+        {},
+        [],
+    ),
     _function_tool("get_cart", "Показать локальную корзину текущей сессии.", {}, []),
     _function_tool(
         "set_ui_actions",
-        "Выбрать только полезные следующие действия интерфейса после получения фактов из инструментов. Не изменяет корзину.",
-        {"actions": {"type": "array", "maxItems": 3, "items": {
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "enum": list(ACTION_TYPES)},
-                "article": {"type": ["string", "null"]},
-                "qty": {"type": ["integer", "null"], "minimum": 1},
+        "Записать до шести полезных следующих UI-действ. Не изменяет корзину.",
+        {
+            "actions": {
+                "type": "array",
+                "maxItems": 6,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": list(ACTION_TYPES)},
+                        "article": {"type": ["string", "null"], "maxLength": 128},
+                        "qty": {"type": ["integer", "null"], "minimum": 1, "maximum": MAX_CART_QUANTITY},
+                    },
+                    "required": ["type", "article", "qty"],
+                    "additionalProperties": False,
+                },
             },
-            "required": ["type", "article", "qty"],
-            "additionalProperties": False,
-        }}},
+        },
         ["actions"],
     ),
 ]
@@ -804,8 +896,83 @@ def _tool_message_content(result) -> str:
     )
 
 
-def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, model: str, api_key: str,
-                     action_state: ActionState | None = None) -> str:
+def _record_ui_actions(state: ActionState, args: dict) -> dict:
+    """Store only allowlisted model intentions; labels and commands stay server-owned."""
+    if set(args) != {"actions"} or not isinstance(args.get("actions"), list):
+        raise ValueError
+    if len(args["actions"]) > 6:
+        raise ValueError
+    proposals: list[dict] = []
+    for raw in args["actions"][:6]:
+        if not isinstance(raw, dict) or raw.get("type") not in ACTION_TYPES:
+            continue
+        item = {"type": raw["type"]}
+        article = raw.get("article")
+        if isinstance(article, str) and article.strip() and len(article) <= 128:
+            item["article"] = article.strip()
+        qty = raw.get("qty")
+        if type(qty) is int and 1 <= qty <= MAX_CART_QUANTITY:
+            item["qty"] = qty
+        proposals.append(item)
+    state.called = True
+    state.proposed = proposals
+    return {"ok": True, "recorded": len(proposals)}
+
+
+def _observe_ui_facts(state: ActionState, name: str, args: dict, result: object) -> None:
+    """Retain the small trusted result set needed to validate UI actions without new I/O."""
+    state.observe(name, args, result)
+    products = getattr(state, "observed_products", None)
+    if not isinstance(products, dict):
+        products = {}
+        state.observed_products = products
+
+    values = result if isinstance(result, list) else [result]
+    for value in values:
+        if isinstance(value, dict) and isinstance(value.get("article"), str) and "error" not in value:
+            products[value["article"].casefold()] = value
+
+    if name == "find_analogs" and isinstance(result, list) and result:
+        sources = getattr(state, "analog_sources", None)
+        if not isinstance(sources, set):
+            sources = set()
+            state.analog_sources = sources
+        article = args.get("article")
+        if isinstance(article, str):
+            sources.add(article.casefold())
+
+
+def _cart_mutation_reply(user_text: str, name: str, result: dict) -> str:
+    language = detect_language(user_text)
+    if name == "change_quantity":
+        if language == "en":
+            return f"Quantity of {result['article']} in the cart changed to {result['qty']}. Link: {CART_LINK}"
+        return (
+            f"Себеттегі {result['article']} тауарының саны: {result['qty']} дана. Сілтеме: {CART_LINK}"
+            if language == "kk" else
+            f"Количество {result['article']} в корзине изменено на {result['qty']} шт. Ссылка: {CART_LINK}"
+        )
+    if name == "remove_from_cart":
+        if language == "en":
+            return f"{result['article']} was removed from the cart. Link: {CART_LINK}"
+        return (
+            f"{result['article']} тауары себеттен алынды. Сілтеме: {CART_LINK}"
+            if language == "kk" else
+            f"{result['article']} удалён из корзины. Ссылка: {CART_LINK}"
+        )
+    if language == "en":
+        return f"The cart was cleared. Link: {CART_LINK}"
+    return f"Себет тазаланды. Сілтеме: {CART_LINK}" if language == "kk" else f"Корзина очищена. Ссылка: {CART_LINK}"
+
+
+def run_openai_agent(
+    messages: list[dict],
+    session_id: str,
+    tools: ShopTools,
+    model: str,
+    api_key: str,
+    action_state: ActionState | None = None,
+) -> str:
     from openai import OpenAI
 
     system_prompt = asset_path("system_prompt.txt").read_text(encoding="utf-8")
@@ -817,6 +984,23 @@ def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, mo
     state = action_state if action_state is not None else ActionState()
     traces: list[dict] = []
     tool_call_count = 0
+
+    def forced_final_completion() -> str:
+        """Make one bounded, tool-free call after the operational budget is exhausted."""
+        response = client.chat.completions.create(
+            model=model,
+            messages=conversation,
+            temperature=0,
+            max_completion_tokens=500,
+        )
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return safe_reply(user_text, "tools")
+        message = choices[0].message
+        if getattr(message, "tool_calls", None) or not str(getattr(message, "content", "") or "").strip():
+            return safe_reply(user_text, "tools")
+        return guard_model_reply(getattr(message, "content", ""), user_text, traces, system_prompt)
+
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
             model=model,
@@ -834,8 +1018,18 @@ def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, mo
         calls = list(getattr(message, "tool_calls", None) or [])
         if not calls:
             return guard_model_reply(getattr(message, "content", ""), user_text, traces, system_prompt)
-        if len(calls) > MAX_TOOL_CALLS - tool_call_count:
+        operational_calls = [
+            call for call in calls
+            if str(getattr(getattr(call, "function", None), "name", "")) != "set_ui_actions"
+        ]
+        action_calls = len(calls) - len(operational_calls)
+        if action_calls and operational_calls:
             return safe_reply(user_text, "tools")
+        if action_calls > 1:
+            return safe_reply(user_text, "tools")
+        if len(operational_calls) > MAX_TOOL_CALLS - tool_call_count:
+            return safe_reply(user_text, "tools")
+        action_only = bool(calls) and not operational_calls
         conversation.append(_assistant_message_payload(message, calls))
         for call in calls:
             name = str(getattr(getattr(call, "function", None), "name", ""))
@@ -845,25 +1039,27 @@ def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, mo
                 if not isinstance(args, dict):
                     raise TypeError
                 if name == "set_ui_actions":
-                    state.called = True
-                    raw_actions = args.get("actions")
-                    state.proposed = raw_actions[:30] if isinstance(raw_actions, list) else []
-                    result = {"ok": True, "recorded": len(state.proposed)}
+                    result = _record_ui_actions(state, args)
                 else:
                     result = tools.dispatch(name, args, session_id, messages)
-                    state.observe(name, args, result)
+                    _observe_ui_facts(state, name, args, result)
             except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
                 result = {"error": "Некорректные аргументы инструмента"}
-            tool_call_count += 1
+            if name != "set_ui_actions":
+                tool_call_count += 1
             traces.append({"name": name, "args": args, "result": result})
             if name == "add_to_cart" and isinstance(result, dict) and result.get("ok"):
                 return cart_success_reply(user_text, result)
+            if name in {"change_quantity", "remove_from_cart", "clear_cart"} and isinstance(result, dict) and result.get("ok"):
+                return _cart_mutation_reply(user_text, name, result)
             conversation.append({
                 "role": "tool",
                 "tool_call_id": str(getattr(call, "id", "")),
                 "content": _tool_message_content(result),
             })
-    return safe_reply(user_text, "tools")
+        if action_only:
+            return forced_final_completion()
+    return forced_final_completion()
 
 
 _DEMO_SEARCH_STOPWORDS = {
@@ -902,33 +1098,66 @@ def _format_product_choices(products: list[dict]) -> str:
     return "; ".join(choices)
 
 
-def _clarify_products(results: list[dict]) -> str:
-    """Ask one useful narrowing question without exposing internal article IDs."""
-    categories = sorted({str(product.get("category") or "").strip() for product in results if product.get("category")})
-    if len(categories) > 1:
-        return "Уточните категорию: " + ", ".join(categories[:3]) + "?"
-    spec_values: dict[str, set[str]] = {}
-    for product in results:
-        full = product
-        characteristics = full.get("characteristics") or {}
-        if isinstance(characteristics, dict):
-            for key, value in characteristics.items():
-                if value not in (None, ""):
-                    spec_values.setdefault(str(key), set()).add(str(value))
-    varying = next(((key, sorted(values)) for key, values in spec_values.items() if 1 < len(values) <= 5), None)
-    if varying:
-        key, values = varying
-        return f"Уточните {key}: " + " или ".join(values[:3]) + "?"
-    return "Уточните назначение, нужную мощность или другой ключевой параметр товара."
-
-
 def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> str:
     """Offline tool-using fallback for common demo questions."""
     text = str(messages[-1]["content"]).strip()
     if contains_payment_data(text):
         return "Не отправляйте платёжные данные, пароли или коды в чат. Оплата проходит только на сайте при оформлении заказа."
+    if text in _DEMO_UI_QUESTION_REPLIES:
+        return _DEMO_UI_QUESTION_REPLIES[text]
     lower = text.casefold()
     articles = [product["article"] for product in _mentioned_products(lower, tools.catalog)]
+    english_change = _english_button_values(_EN_CHANGE_BUTTON_RE, text)
+    if english_change:
+        article, qty = english_change
+        if qty is None:
+            return f"Specify a whole-number quantity from 1 to {MAX_CART_QUANTITY}."
+        result = tools.dispatch(
+            "change_quantity",
+            {"article": article, "qty": qty},
+            session_id,
+            messages,
+        )
+        return (
+            _cart_mutation_reply(text, "change_quantity", result)
+            if result.get("ok") else
+            "The quantity could not be changed. Check the product, quantity, and available stock."
+        )
+    english_remove = _english_button_values(_EN_REMOVE_BUTTON_RE, text)
+    if english_remove:
+        article, _quantity = english_remove
+        result = tools.dispatch("remove_from_cart", {"article": article}, session_id, messages)
+        return (
+            _cart_mutation_reply(text, "remove_from_cart", result)
+            if result.get("ok") else
+            "The item could not be removed. Check that it is still in the cart."
+        )
+    if _EN_CLEAR_BUTTON_RE.fullmatch(text):
+        result = tools.dispatch("clear_cart", {}, session_id, messages)
+        return (
+            _cart_mutation_reply(text, "clear_cart", result)
+            if result.get("ok") else
+            "The cart could not be cleared. Please try again."
+        )
+    if lower.startswith("измени количество ") or lower.startswith("себеттегі "):
+        quantity = re.search(r"\b(\d+)\s*(?:шт|данаға)(?:\W|$)", lower)
+        if len(articles) != 1 or not quantity:
+            return "Укажите товар и новое количество."
+        result = tools.dispatch(
+            "change_quantity",
+            {"article": articles[0], "qty": int(quantity.group(1))},
+            session_id,
+            messages,
+        )
+        return _cart_mutation_reply(text, "change_quantity", result) if result.get("ok") else f"Не удалось изменить количество: {result['error']}."
+    if lower.startswith("удали ") or "себеттен алып таста" in lower:
+        if len(articles) != 1:
+            return "Укажите один товар для удаления."
+        result = tools.dispatch("remove_from_cart", {"article": articles[0]}, session_id, messages)
+        return _cart_mutation_reply(text, "remove_from_cart", result) if result.get("ok") else f"Не удалось удалить товар: {result['error']}."
+    if lower.rstrip(".! ") in {"очисти корзину", "себетті тазала"}:
+        result = tools.dispatch("clear_cart", {}, session_id, messages)
+        return _cart_mutation_reply(text, "clear_cart", result) if result.get("ok") else f"Не удалось очистить корзину: {result['error']}."
     selected = _ordinal_product(messages, lower, tools.catalog)
     if selected and not purchase_confirmed(messages, tools.catalog):
         product = tools.dispatch("get_product", {"article": selected["article"]}, session_id, messages)
@@ -941,30 +1170,90 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
                    f"Добавить 1 шт {product['name']} в корзину?")
             )
     if purchase_confirmed(messages, tools.catalog):
-        target, source = _resolve_requested_product(messages, tools.catalog)
+        english_add = _english_button_values(_EN_ADD_BUTTON_RE, text)
+        if english_add:
+            article, value = english_add
+            target = tools.catalog.get(article)
+            source = "english_button"
+            quantity = QuantityParse("valid", value) if value is not None else QuantityParse("invalid")
+        else:
+            target, source = _resolve_requested_product(messages, tools.catalog)
+            quantity = _expected_quantity(messages, source, target) if target is not None else QuantityParse("absent")
         if target is None:
             return "Я вижу несколько возможных товаров. Уточните название или выберите номер из последних предложенных вариантов."
-        quantity = _expected_quantity(messages, source, target)
         if quantity.status != "valid" or quantity.value is None:
-            return "Укажите количество целым числом от 1 до 10000."
+            return (
+                f"Specify a whole-number quantity from 1 to {MAX_CART_QUANTITY}."
+                if english_add else
+                f"Укажите количество целым числом от 1 до {MAX_CART_QUANTITY}."
+            )
         qty = quantity.value
         result = tools.dispatch("add_to_cart", {"article": target["article"], "qty": qty}, session_id, messages)
         if "error" in result:
+            if english_add:
+                return "The item could not be added. Check the product, quantity, and available stock."
             return f"Не удалось добавить товар: {result['error']}. Доступно: {result.get('available', 'неизвестно')}."
         return cart_success_reply(text, result)
     if "корзин" in lower or "себет" in lower:
         cart = tools.dispatch("get_cart", {}, session_id, messages)["cart"]
+        if cart:
+            return "В корзине: " + "; ".join(f"{item['name']} — {item['qty']} шт." for item in cart)
+        return "Корзина пуста."
         summary = "В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста."
-        return summary
-    if any(word in lower for word in ("достав", "оплат", "услов", "покуп")):
+        return f"{summary} Ссылка: {CART_LINK} (локальная корзина с сайтом не синхронизируется)."
+    if any(word in lower for word in ("достав", "оплат", "услов", "покуп", "жеткіз", "төлем")):
         return tools.dispatch("get_purchase_conditions", {}, session_id, messages)
-    if "аналог" in lower:
+    if "менеджер" in lower or "менеджері" in lower:
+        return "Для сложного заказа свяжитесь с менеджером по телефону, указанному в шапке сайта."
+    if articles and any(word in lower for word in ("характерист", "сипаттама")):
+        product = tools.dispatch("get_product", {"article": articles[0]}, session_id, messages)
+        specs = product.get("characteristics") or {}
+        details = "; ".join(f"{key}: {value}" for key, value in specs.items()) if isinstance(specs, dict) else ""
+        return f"{product['name']} ({product['article']}): {details or 'характеристики не указаны'}."
+    if articles and any(word in lower for word in ("по складам", "наличие товара", "қоймалардағы")):
+        product = tools.dispatch("get_product", {"article": articles[0]}, session_id, messages)
+        stores = product.get("stores") or []
+        locations = "; ".join(
+            f"{store.get('name', 'Склад')}: {store.get('quantity', 'неизвестно')} шт."
+            for store in stores if isinstance(store, dict)
+        )
+        stock = product["stock"] if product["stock"] is not None else "неизвестен"
+        return f"{product['name']} ({product['article']}): остаток {stock}. {locations or 'Данных по складам нет.'}"
+    if articles and ("сертификат" in lower or "сертификаттар" in lower):
+        product = tools.dispatch("get_product", {"article": articles[0]}, session_id, messages)
+        certificates = product.get("certificates") or []
+        return f"Сертификаты {product['article']}: " + ("; ".join(map(str, certificates)) if certificates else "в каталоге не указаны.")
+    if "сравн" in lower or "салыстыр" in lower:
+        compared = articles[:]
+        if len(compared) < 2:
+            for previous in reversed(messages[:-1]):
+                if previous.get("role") == "assistant":
+                    compared = [
+                        product["article"] for product in tools.catalog.products
+                        if product["article"].casefold() in str(previous.get("content") or "").casefold()
+                    ]
+                    if len(compared) >= 2:
+                        break
+        if len(compared) >= 2:
+            products = [tools.catalog.get(article) for article in compared[:3]]
+            return "Сравнение: " + "; ".join(
+                f"{product['name']} ({product['article']}): {product['price']} ₸, остаток {product['stock']}"
+                for product in products if product
+            )
+        return "Назовите два артикула для сравнения."
+    if "аналог" in lower or "ұқсас" in lower:
         if not articles:
             for previous in reversed(messages[:-1]):
                 if previous.get("role") == "assistant":
-                    found = [product["article"] for product in _mentioned_products(
-                        str(previous.get("content") or "").casefold(), tools.catalog
-                    )]
+                    found = [p["article"] for p in tools.catalog.products if p["article"].casefold() in str(previous.get("content") or "").casefold()]
+                    if not found:
+                        found = [
+                            product["article"]
+                            for product in _mentioned_products(
+                                str(previous.get("content") or "").casefold(),
+                                tools.catalog,
+                            )
+                        ]
                     if len(found) == 1:
                         articles = found
                         break
@@ -972,13 +1261,13 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
             analogs = tools.dispatch("find_analogs", {"article": articles[0]}, session_id, messages)
             if analogs:
                 options = _format_product_choices(analogs)
-                return f"Подходящие аналоги: {options}. Выберите номер или название."
+                return f"Подходящие аналоги в наличии: {options}. Выберите номер или название."
             return "Аналогов в наличии не найдено."
     if articles:
         p = tools.dispatch("get_product", {"article": articles[0]}, session_id, messages)
         if "error" not in p:
             stock = p["stock"] if p["stock"] is not None else "неизвестен"
-            return f"{p['name']}: {p['price']} ₸, остаток: {stock}. " + ("Могу подобрать аналог." if p["stock"] == 0 else "Добавление недоступно до уточнения остатка." if p["stock"] is None else "Добавить в корзину?")
+            return f"{p['name']} ({p['article']}): {p['price']} ₸, остаток: {stock}. " + ("Могу подобрать аналог." if p["stock"] == 0 else "Добавление недоступно до уточнения остатка." if p["stock"] is None else "Добавить в корзину?")
     query = _demo_search_query(text)
     results = tools.dispatch("search_products", {"query": query}, session_id, messages) if query else []
     if not isinstance(results, list):
@@ -988,11 +1277,8 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
             p = results[0]
             stock = p["stock"] if p["stock"] is not None else "неизвестен"
             return f"{p['name']}: {p['price']} ₸, остаток: {stock}. " + ("Могу подобрать аналог." if p["stock"] == 0 else "Добавление недоступно до уточнения остатка." if p["stock"] is None else "Добавить в корзину?")
-        if len(results) <= 3:
-            return "Нашёл варианты: " + _format_product_choices(results) + ". Выберите номер или название."
-        full_results = [tools.catalog.get(product["article"]) or product for product in results]
-        return _clarify_products(full_results)
+        return "Нашёл варианты: " + _format_product_choices(results) + ". Выберите номер или название."
     requested_article = re.search(r"\b[A-Z0-9]+(?:-[A-Z0-9]+)+\b", text, re.IGNORECASE)
     if requested_article:
-        return "Товар не найден. Уточните название, производителя или ключевую характеристику."
+        return f"Товар {requested_article.group(0)} в каталоге не найден. Проверьте артикул или уточните название."
     return "По запросу товары в каталоге не найдены. Уточните название, бренд или характеристику."
