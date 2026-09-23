@@ -3,12 +3,36 @@ const history = [];
 let waiting = false;
 let localCart = [];
 
-const demoQuestions = [
-  'Есть автомат ABB на 16А?',
-  'Нет в наличии? А какой аналог посоветуете?',
-  'Как у вас с оплатой и доставкой по Алматы?',
-  'Да, добавь 2 штуки автомата на 16А в корзину',
-  'Дай ссылку на корзину'
+const examplePool = [
+  'Есть модульный автомат Schneider Electric ACTI 9 на 16 А?',
+  'Подберите аналог автомата Schneider на 16 А из наличия',
+  'Нужен медный силовой кабель для стационарной прокладки',
+  'Покажите алюминиевый бронированный кабель АВБШВ',
+  'Какие LED-панели есть в наличии?',
+  'Нужен накладной светодиодный спот для офиса',
+  'Подберите лампу E27 нейтрального света 4000 К',
+  'Есть выключатель-разъединитель ВРТ IEK?',
+  'Покажите автоматы EASY9 Schneider Electric',
+  'Нужен перфорированный кабель-канал IEK',
+  'Какие аксессуары есть для кабель-канала?',
+  'Покажите розетки и выключатели серии VITA',
+  'Нужен электрический шкаф или щит для автоматики',
+  'Есть мультиметры и измерительные приборы?',
+  'Подберите токоизмерительные клещи',
+  'Что есть для видеонаблюдения и СКУД?',
+  'Как у вас с оплатой и доставкой по Караганде?',
+  'Да, добавь 2 штуки выбранного товара в корзину',
+  'Какая замена есть для товара, которого нет в наличии?',
+  'Дайте ссылку на мою корзину'
+];
+
+const categoryQuestions = [
+  ['Кабель / Провод', 'Подберите кабель для моего проекта'],
+  ['Светильники / Лампы', 'Какие светильники и лампы есть в наличии?'],
+  ['Низковольтная аппаратура', 'Покажите низковольтную аппаратуру'],
+  ['Кабеленесущие системы', 'Что есть из кабеленесущих систем?'],
+  ['Шкафы / Щиты', 'Помогите подобрать электрический шкаф или щит'],
+  ['Инструмент / КИП', 'Какие инструменты и измерительные приборы есть?']
 ];
 
 const demoProducts = [
@@ -21,7 +45,8 @@ const elements = {
   messages: document.querySelector('#messages'), cartCard: document.querySelector('#cart-card'), cartEmpty: document.querySelector('#cart-empty'),
   cartContent: document.querySelector('#cart-content'), cartItems: document.querySelector('#cart-items'), cartCount: document.querySelector('#cart-count'),
   cartTotal: document.querySelector('#cart-total'), cartLink: document.querySelector('#cart-link'), connection: document.querySelector('#connection-label'),
-  demoPanel: document.querySelector('#demo-panel'), demoQuestions: document.querySelector('#demo-questions')
+  demoPanel: document.querySelector('#demo-panel'), demoQuestions: document.querySelector('#demo-questions'),
+  categories: document.querySelector('#category-questions')
 };
 
 function formatMoney(value) {
@@ -35,8 +60,8 @@ function addMessage(role, content, options = {}) {
 
   const bubble = document.createElement('div');
   bubble.className = role === 'user'
-    ? 'max-w-[88%] rounded-2xl rounded-br-md bg-ink px-4 py-3 text-sm leading-relaxed text-white sm:max-w-[75%] sm:text-[15px]'
-    : 'max-w-[92%] rounded-2xl rounded-bl-md bg-slate-100 px-4 py-3 text-sm leading-relaxed text-slate-700 sm:max-w-[78%] sm:text-[15px]';
+    ? 'max-w-[88%] rounded-2xl rounded-br-md bg-ektDark px-4 py-3 text-sm leading-relaxed text-white sm:max-w-[75%] sm:text-[15px]'
+    : 'max-w-[92%] rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-700 shadow-sm sm:max-w-[78%] sm:text-[15px]';
   bubble.textContent = content;
   row.append(bubble);
   elements.messages.append(row);
@@ -153,19 +178,40 @@ elements.input.addEventListener('input', () => {
   elements.input.style.height = `${Math.min(elements.input.scrollHeight, 128)}px`;
 });
 
-demoQuestions.forEach((question, index) => {
+function renderExampleQuestions() {
+  const shuffled = [...examplePool].sort(() => Math.random() - 0.5).slice(0, 4);
+  elements.demoQuestions.replaceChildren();
+  shuffled.forEach(question => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'shrink-0 rounded border border-sky-200 bg-white px-3 py-2 text-left text-xs font-medium text-ektDark transition hover:border-ekt hover:bg-sky-50';
+    button.textContent = question;
+    button.addEventListener('click', () => sendMessage(question));
+    elements.demoQuestions.append(button);
+  });
+}
+
+categoryQuestions.forEach(([label, question]) => {
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = 'shrink-0 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:border-brand hover:text-brand';
-  button.textContent = `${index + 1}. ${question}`;
+  button.className = 'px-4 py-3 text-sm font-medium text-slate-600 transition hover:bg-ektLight hover:text-ektDark';
+  button.textContent = label;
   button.addEventListener('click', () => sendMessage(question));
-  elements.demoQuestions.append(button);
+  elements.categories.append(button);
 });
 
-function toggleDemo(force) { elements.demoPanel.classList.toggle('hidden', force ?? !elements.demoPanel.classList.contains('hidden')); }
-document.querySelector('#demo-button').addEventListener('click', () => toggleDemo());
-document.querySelector('#demo-button-mobile').addEventListener('click', () => toggleDemo(false));
+function openFreshExamples() {
+  renderExampleQuestions();
+  elements.demoPanel.classList.remove('hidden');
+  document.querySelector('#demo-button').textContent = 'Другие примеры';
+  document.querySelector('#demo-button-mobile').textContent = 'Показать другие примеры';
+}
+
+document.querySelector('#demo-button').addEventListener('click', openFreshExamples);
+document.querySelector('#demo-button-mobile').addEventListener('click', openFreshExamples);
 document.querySelector('#close-demo').addEventListener('click', () => toggleDemo(true));
+
+function toggleDemo(force) { elements.demoPanel.classList.toggle('hidden', force ?? !elements.demoPanel.classList.contains('hidden')); }
 
 addMessage('assistant', 'Здравствуйте! Я помогу найти электротехнический товар, проверить наличие и собрать корзину. Что вы ищете?');
 updateCart();
