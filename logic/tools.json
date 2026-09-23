@@ -1,0 +1,106 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "search_products",
+      "description": "Поиск товаров в каталоге ekt.kz по названию, артикулу или категории. Возвращает список кратких карточек (артикул, наименование, категория, цена, статус наличия).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Поисковый запрос: название, артикул или категория, например «автомат ABB 16А»"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_product",
+      "description": "Полная карточка товара: характеристики, сертификаты, цена, остаток по складам, статус наличия.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "type": "string",
+            "description": "Артикул товара"
+          }
+        },
+        "required": [
+          "article"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "find_analogs",
+      "description": "Аналоги для товара, которого нет в наличии: товары той же категории с близкими характеристиками, только в наличии.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "type": "string",
+            "description": "Артикул товара, для которого нужен аналог"
+          }
+        },
+        "required": [
+          "article"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_purchase_conditions",
+      "description": "Условия покупки: способы оплаты, доставка, минимальная партия.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_to_cart",
+      "description": "Добавить товар в корзину клиента. Вызывать ТОЛЬКО после явного подтверждения клиента в его последнем сообщении. qty не больше остатка. session_id сервер подставляет сам.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "type": "string",
+            "description": "Артикул товара"
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Количество, не больше остатка"
+          }
+        },
+        "required": [
+          "article",
+          "qty"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_cart",
+      "description": "Текущая корзина клиента и ссылка на неё.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  }
+]
