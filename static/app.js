@@ -118,7 +118,7 @@ function addMessage(role, content, options = {}) {
 }
 
 function responseLanguage(text) {
-  return /[әғқңөұүһі]|\b(?:бар|қанша|калай|қалай|керек|рахмет|иә|жоқ|дана|себет)\b/i.test(text) ? 'kk' : 'ru';
+  return /[әғқңөұүһі]|\b(?:бар|қанша|калай|қалай|керек|рахмет|иә|жоқ|дана|себет|тауар)\b/i.test(text) ? 'kk' : 'ru';
 }
 
 function actionMessage(action, quantity, language) {
@@ -135,7 +135,8 @@ function actionMessage(action, quantity, language) {
 function createQuantityControl(action, language) {
   const control = document.createElement('div');
   control.className = 'chat-action flex max-w-full items-center gap-1 overflow-hidden rounded-lg border border-ekt bg-white p-1 shadow-sm';
-  const max = Math.max(1, Math.min(999, Number(action.max_qty) || 999));
+  const reportedMax = Number(action.max_qty);
+  const max = Number.isSafeInteger(reportedMax) && reportedMax > 0 ? reportedMax : 1;
   let quantity = Math.max(1, Math.min(max, Number(action.qty) || 1));
   control.innerHTML = `
     <button type="button" class="quantity-minus grid h-8 w-8 place-items-center rounded text-lg font-bold text-ektDark hover:bg-ektLight" aria-label="Уменьшить количество">−</button>
@@ -160,7 +161,7 @@ function createActionButton(action, language) {
   button.className = 'chat-action rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs font-bold text-ektDark shadow-sm hover:border-ekt hover:bg-ektLight';
   button.textContent = String(action.label || ACTION_LABELS[language][action.type] || action.type);
   button.addEventListener('click', () => {
-    if (action.type === 'add_to_cart') {
+    if (action.type === 'add_to_cart' || action.type === 'change_quantity') {
       const startWidth = button.getBoundingClientRect().width;
       const control = createQuantityControl(action, language);
       button.replaceWith(control);

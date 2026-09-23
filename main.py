@@ -10,19 +10,21 @@ import re
 import unicodedata
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from html import escape
 from pathlib import Path
 from threading import RLock
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agent import CART_LINK, ShopTools, contains_payment_data, run_demo_agent, run_openai_agent
+from cart_state import CartStateCodec, InvalidCartToken
 from catalog import Catalog
+from ui_actions import ActionState, ChatAction, build_actions, demo_action_proposals
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -88,6 +90,7 @@ class ChatRequest(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=128)
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
+    cart_token: str | None = Field(default=None, max_length=8192)
 
     @field_validator("session_id", mode="before")
     @classmethod
@@ -119,7 +122,10 @@ class CartItem(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     cart: list[CartItem]
-    cart_link: str
+    cart_link: str | None
+    cart_token: str | None = None
+    assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system"
+    actions: list[ChatAction] = Field(default_factory=list)
 
 
 @asynccontextmanager
@@ -128,6 +134,8 @@ async def lifespan(app: FastAPI):
     catalog.load()
     app.state.catalog = catalog
     app.state.tools = ShopTools(catalog)
+    signing_key = os.getenv("CART_SIGNING_KEY")
+    app.state.cart_codec = CartStateCodec(signing_key) if signing_key else None
     app.state.histories = {}
     app.state.last_responses = OrderedDict()
     app.state.history_lock = RLock()
@@ -196,10 +204,42 @@ def demo_questions():
     }
 
 
+@app.get("/demo-cart", response_class=HTMLResponse)
+def demo_cart(token: str):
+    """Render the signed assistant cart without exposing its state in the URL body."""
+    codec: CartStateCodec | None = app.state.cart_codec
+    if not codec:
+        raise HTTPException(status_code=404)
+    tools = ShopTools(app.state.catalog)
+    try:
+        session_id = codec.restore(tools, token)
+    except InvalidCartToken as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cart = tools.get_cart(session_id)
+    rows = "".join(
+        f"<li><span>{escape(item['name'])} × {item['qty']}</span>"
+        f"<strong>{item['price'] * item['qty']:,.0f} ₸</strong></li>" if item["price"] is not None else
+        f"<li><span>{escape(item['name'])} × {item['qty']}</span><strong>Цена неизвестна</strong></li>"
+        for item in cart
+    )
+    total = sum((item["price"] or 0) * item["qty"] for item in cart)
+    return HTMLResponse(
+        "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Корзина ассистента EKT</title><style>body{font:16px/1.5 Arial,sans-serif;max-width:680px;margin:5vh auto;padding:24px;color:#173447}"
+        "li{display:flex;justify-content:space-between;gap:20px;padding:14px 0;border-bottom:1px solid #ddd}ul{padding:0;list-style:none}"
+        "a{color:#07547a}</style><h1>Корзина ассистента EKT</h1><p>Эта корзина не связана с корзиной сайта ekt.kz. Оформление заказа из неё пока недоступно.</p>"
+        f"<ul>{rows}</ul><p><strong>Итого: {total:,.0f} ₸</strong></p><p><a href='/'>Вернуться к чату</a></p></html>",
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
 def _request_hash(request: ChatRequest) -> str:
     # An exact transport retry reuses the full payload. Cart mutation has a second,
     # semantic idempotency gate in ShopTools for altered or delayed replays.
-    payload = [message.model_dump() for message in request.messages]
+    payload = {
+        "messages": [message.model_dump() for message in request.messages],
+        "cart_token": request.cart_token,
+    }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -243,15 +283,41 @@ def _response(
     session_id: str,
     reply: str,
     tools: ShopTools,
+    http_request: Request,
+    latest_user: str = "",
+    assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system",
+    cart_before: list[dict] | None = None,
+    action_state: ActionState | None = None,
 ) -> ChatResponse:
     reply = str(reply or "").strip() or "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
+    reply = re.sub(r"(?:Ссылка\s*:\s*)?https://ekt\.kz/cart", "", reply, flags=re.IGNORECASE)
+    reply = re.sub(r"[ \t]+([.,;:])", r"\1", reply)
+    reply = re.sub(r"[ \t]{2,}", " ", reply).strip(" -")
     if len(reply) > MAX_MODEL_REPLY_CHARS:
         reply = reply[: MAX_MODEL_REPLY_CHARS - 1].rstrip() + "…"
 
+    cart = tools.get_cart(session_id)
+    codec: CartStateCodec | None = app.state.cart_codec
+    token = codec.encode(tools, session_id) if codec else None
+    cart_link = str(http_request.url_for("demo_cart").include_query_params(token=token)) if token and cart else None
+    actions: list[ChatAction] = []
+    if assistant_source in ("openai", "demo"):
+        before = cart_before or []
+        if assistant_source == "openai" and action_state and action_state.called:
+            proposals = action_state.proposed
+            observed = action_state.observed_articles
+        else:
+            proposals = demo_action_proposals(latest_user, reply, app.state.catalog, before, cart)
+            observed = None
+        actions = build_actions(proposals, reply, latest_user, app.state.catalog, before, cart, observed)
+
     return ChatResponse(
         reply=reply,
-        cart=tools.get_cart(session_id),
-        cart_link=CART_LINK,
+        cart=cart,
+        cart_link=cart_link,
+        cart_token=token,
+        assistant_source=assistant_source,
+        actions=actions,
     )
 
 
@@ -261,8 +327,21 @@ def _finish_turn(
     messages: list[dict],
     reply: str,
     tools: ShopTools,
+    http_request: Request,
+    assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system",
+    cart_before: list[dict] | None = None,
+    action_state: ActionState | None = None,
 ) -> ChatResponse:
-    response = _response(session_id, reply, tools)
+    response = _response(
+        session_id,
+        reply,
+        tools,
+        http_request,
+        str(messages[-1].get("content") or "") if messages else "",
+        assistant_source,
+        cart_before,
+        action_state,
+    )
     with app.state.history_lock:
         app.state.histories[session_id] = _bounded_history(
             [*messages, {"role": "assistant", "content": response.reply}],
@@ -276,14 +355,23 @@ def _finish_turn(
     return response
 
 
-def _chat_unlocked(request: ChatRequest) -> ChatResponse:
-    tools: ShopTools = app.state.tools
+def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
+    codec: CartStateCodec | None = app.state.cart_codec
+    tools: ShopTools = ShopTools(app.state.catalog) if codec else app.state.tools
+    if codec and request.cart_token:
+        try:
+            codec.restore(tools, request.cart_token, request.session_id)
+        except InvalidCartToken as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cart_before = tools.get_cart(request.session_id)
+    action_state = ActionState()
     incoming = [message.model_dump() for message in request.messages]
     if incoming[-1]["role"] != "user":
         return _response(
             request.session_id,
             "Последнее сообщение должно быть от клиента.",
             tools,
+            http_request,
         )
 
     request_hash = _request_hash(request)
@@ -303,6 +391,7 @@ def _chat_unlocked(request: ChatRequest) -> ChatResponse:
             messages,
             "Не отправляйте платёжные данные, пароли или коды в чат. Оплата проходит только на сайте при оформлении заказа.",
             tools,
+            http_request,
         )
 
     if app.state.catalog.source == "unavailable":
@@ -312,35 +401,53 @@ def _chat_unlocked(request: ChatRequest) -> ChatResponse:
             messages,
             "Каталог EKT временно недоступен. Проверьте товары и цены позже.",
             tools,
+            http_request,
+            assistant_source="unavailable",
         )
 
     demo_mode = app.state.catalog.demo_mode
     api_key = os.getenv("OPENAI_API_KEY")
     try:
         if api_key:
-            reply = run_openai_agent(messages, request.session_id, tools, os.getenv("MODEL_NAME", "gpt-4.1-mini"), api_key)
+            reply = run_openai_agent(
+                messages,
+                request.session_id,
+                tools,
+                os.getenv("MODEL_NAME", "gpt-4.1-mini"),
+                api_key,
+                action_state,
+            )
+            assistant_source = "openai"
         elif demo_mode:
             reply = run_demo_agent(messages, request.session_id, tools)
+            assistant_source = "demo"
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
+            assistant_source = "unavailable"
     except Exception:
         LOG.exception("Chat agent failed")
         if demo_mode:
             reply = run_demo_agent(messages, request.session_id, tools)
+            assistant_source = "demo"
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
+            assistant_source = "unavailable"
     return _finish_turn(
         request.session_id,
         request_hash,
         messages,
         reply,
         tools,
+        http_request,
+        assistant_source,
+        cart_before,
+        action_state,
     )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+def chat(request: ChatRequest, http_request: Request):
     # Serialize turns of the same anonymous session (with fixed-memory striped
     # locks) so history and cart mutations cannot race each other.
     with _session_turn_lock(request.session_id):
-        return _chat_unlocked(request)
+        return _chat_unlocked(request, http_request)

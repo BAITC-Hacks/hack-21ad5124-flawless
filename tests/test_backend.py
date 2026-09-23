@@ -114,11 +114,12 @@ class BackendTests(unittest.TestCase):
             messages.append({"role": "user", "content": question})
             reply = run_demo_agent(messages, "one", tools)
             messages.append({"role": "assistant", "content": reply})
-        self.assertIn("515291", messages[1]["content"])
-        self.assertIn("515292", messages[3]["content"])
+        self.assertIn("Автомат ABB C16 16 А", messages[1]["content"])
+        self.assertIn("Автомат Schneider C16 16 А", messages[3]["content"])
         self.assertIn("условия покупки", messages[5]["content"].casefold())
         self.assertEqual(tools.get_cart("one")[0]["qty"], 2)
-        self.assertIn("https://ekt.kz/cart", messages[-1]["content"])
+        self.assertIn("В корзине", messages[-1]["content"])
+        self.assertNotIn("https://", messages[-1]["content"])
 
     def test_current_team_demo_script(self):
         messages = []
@@ -131,10 +132,11 @@ class BackendTests(unittest.TestCase):
         ):
             messages.append({"role": "user", "content": question})
             messages.append({"role": "assistant", "content": run_demo_agent(messages, "team", self.tools)})
-        self.assertIn("DEMO-AV-25", messages[1]["content"])
-        self.assertIn("DEMO-AV-16", messages[3]["content"])
+        self.assertIn("Автоматический выключатель", messages[1]["content"])
+        self.assertIn("Автоматический выключатель 1P 16 А", messages[3]["content"])
         self.assertEqual(self.tools.get_cart("team")[0]["qty"], 2)
-        self.assertIn("https://ekt.kz/cart", messages[-1]["content"])
+        self.assertIn("В корзине", messages[-1]["content"])
+        self.assertNotIn("https://", messages[-1]["content"])
 
     def test_payment_data_is_stopped_before_model(self):
         with patch.dict(os.environ, {"DEMO_MODE": "1", "OPENAI_API_KEY": "test-key"}):
@@ -232,18 +234,20 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(client.get("/health").json()["catalog_source"], "demo")
                 search = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Покажи лампы"}]})
                 self.assertEqual(search.status_code, 200)
-                self.assertEqual(set(search.json()), {"reply", "cart", "cart_link"})
+                self.assertEqual(set(search.json()), {
+                    "reply", "cart", "cart_link", "cart_token", "assistant_source", "actions"
+                })
                 self.assertEqual(search.json()["cart"], [])
                 changed_contract = client.post("/api/chat", json={
                     "session_id": "demo",
                     "messages": [{"role": "user", "content": "Покажи лампы"}],
                     "cart_token": "unexpected",
                 })
-                self.assertEqual(changed_contract.status_code, 422)
+                self.assertEqual(changed_contract.status_code, 200)
                 add = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Добавь 2 шт DEMO-LED-12"}]})
                 self.assertEqual(add.status_code, 200)
                 self.assertEqual(add.json()["cart"][0]["qty"], 2)
-                self.assertEqual(add.json()["cart_link"], "https://ekt.kz/cart")
+                self.assertIsNone(add.json()["cart_link"])
 
 
 if __name__ == "__main__":

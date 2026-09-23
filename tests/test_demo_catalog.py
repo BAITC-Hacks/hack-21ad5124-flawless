@@ -42,14 +42,15 @@ class DemoCatalogTests(unittest.TestCase):
     def test_off_script_queries_work_through_demo_agent(self):
         tools = ShopTools(self.catalog)
         expected = {
-            "Покажи кабель ВВГ 3х2.5": "DEMO-CAB-VVG-3X25",
-            "Есть автомат ABB на 40А?": "DEMO-ABB-SH201-C40",
-            "Найди светильник на 36 Вт": "DEMO-LUM-PANEL-36",
+            "Покажи кабель ВВГ 3х2.5": "Кабель ВВГнг-LS 3х2.5 мм² медный",
+            "Есть автомат ABB на 40А?": "Автоматический выключатель ABB SH201 C40 1P 40 А",
+            "Найди светильник на 36 Вт": "Светодиодный светильник",
         }
-        for index, (query, article) in enumerate(expected.items()):
+        for index, (query, product_name) in enumerate(expected.items()):
             with self.subTest(query=query):
                 reply = run_demo_agent([{"role": "user", "content": query}], f"off-script-{index}", tools)
-                self.assertIn(article, reply)
+                self.assertIn(product_name, reply)
+                self.assertNotIn("DEMO-", reply)
 
     def test_canonical_demo_products_are_unchanged(self):
         expected = {

@@ -24,9 +24,9 @@ def safe_reply(user_text: str, reason: str = "facts") -> str:
     language = detect_language(user_text)
     messages = {
         "facts": {
-            "ru": "Не могу подтвердить эти данные по каталогу. Уточните товар или артикул — я проверю ещё раз.",
-            "kk": "Бұл деректерді каталогтан растай алмадым. Тауарды немесе артикулды нақтылаңыз — қайта тексеремін.",
-            "en": "I could not verify that information in the catalog. Please specify the product or article so I can check again.",
+            "ru": "Не могу подтвердить эти данные по каталогу. Уточните название или ключевую характеристику — я проверю ещё раз.",
+            "kk": "Бұл деректерді каталогтан растай алмадым. Атауын немесе негізгі сипаттамасын нақтылаңыз — қайта тексеремін.",
+            "en": "I could not verify that information in the catalog. Please specify the product name or a key characteristic so I can check again.",
         },
         "instructions": {
             "ru": "Я не раскрываю внутренние инструкции. Могу помочь только с товарами и условиями покупки EKT.",
@@ -39,9 +39,9 @@ def safe_reply(user_text: str, reason: str = "facts") -> str:
             "en": "I cannot promise an unverified discount. An EKT manager confirms terms for large orders.",
         },
         "tools": {
-            "ru": "Не удалось безопасно завершить запрос. Уточните один товар или артикул и повторите.",
-            "kk": "Сұрауды қауіпсіз аяқтау мүмкін болмады. Бір тауарды немесе артикулды нақтылап, қайталаңыз.",
-            "en": "The request could not be completed safely. Please specify one product or article and try again.",
+            "ru": "Не удалось безопасно завершить запрос. Уточните название или ключевую характеристику товара.",
+            "kk": "Сұрауды қауіпсіз аяқтау мүмкін болмады. Тауардың атауын немесе негізгі сипаттамасын нақтылаңыз.",
+            "en": "The request could not be completed safely. Please specify the product name or a key characteristic.",
         },
     }
     return messages.get(reason, messages["facts"])[language]
@@ -49,20 +49,19 @@ def safe_reply(user_text: str, reason: str = "facts") -> str:
 
 def cart_success_reply(user_text: str, result: dict) -> str:
     language = detect_language(user_text)
-    article = str(result.get("article") or "")
+    product = str(result.get("name") or result.get("article") or "товар")
     qty = result.get("added_qty", result.get("qty", 1))
-    link = str(result.get("cart_link") or "https://ekt.kz/cart")
     if result.get("replayed"):
         if language == "kk":
-            return f"Бұл сұрау бұрын өңделген, тауар қайта қосылмады. Себеттегі {article}: {result.get('qty', 0)} дана. Сілтеме: {link}"
+            return f"Бұл сұрау бұрын өңделген, тауар қайта қосылмады. Себеттегі {product}: {result.get('qty', 0)} дана."
         if language == "en":
-            return f"This request was already processed; the item was not added twice. {article} in cart: {result.get('qty', 0)}. Link: {link}"
-        return f"Этот запрос уже обработан — товар повторно не добавлен. {article} в корзине: {result.get('qty', 0)} шт. Ссылка: {link}"
+            return f"This request was already processed; the item was not added twice. {product} in cart: {result.get('qty', 0)}."
+        return f"Этот запрос уже обработан — товар повторно не добавлен. {product} в корзине: {result.get('qty', 0)} шт."
     if language == "kk":
-        return f"Себетке қосылды: {article}, {qty} дана. Бұл жергілікті себет ekt.kz себетімен синхрондалмайды. Сілтеме: {link}"
+        return f"Себетке қосылды: {product}, {qty} дана."
     if language == "en":
-        return f"Added to the cart: {article}, quantity {qty}. This local cart is not synchronized with the ekt.kz cart. Link: {link}"
-    return f"Добавлено в корзину: {article}, {qty} шт. Локальная корзина не синхронизируется с сайтом EKT. Ссылка: {link}"
+        return f"Added to the cart: {product}, quantity {qty}."
+    return f"Добавлено в корзину: {product}, {qty} шт."
 
 
 def _decimal_amount(raw: str) -> Decimal | None:
