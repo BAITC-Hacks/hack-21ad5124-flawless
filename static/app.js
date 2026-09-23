@@ -44,7 +44,32 @@ try {
 const history = [];
 let waiting = false;
 let demoQuestions = [...CANONICAL_DEMO_QUESTIONS];
-let mobileCartRevealed = false;
+
+const ALLOWED_ACTION_TYPES = new Set([
+  'add_to_cart', 'show_analogs', 'show_details', 'show_availability',
+  'show_certificates', 'compare', 'delivery', 'payment', 'cheaper_options',
+  'other_brand', 'clarify', 'contact_manager', 'continue_search',
+  'change_quantity', 'remove_from_cart', 'clear_cart'
+]);
+
+const ACTION_LABELS = {
+  ru: {
+    add_to_cart: 'Добавить', show_analogs: 'Похожие варианты', show_details: 'Характеристики',
+    show_availability: 'Наличие по городам', show_certificates: 'Сертификаты', compare: 'Сравнить',
+    delivery: 'Доставка', payment: 'Оплата', cheaper_options: 'Подобрать дешевле',
+    other_brand: 'Другой производитель', clarify: 'Уточнить параметры', contact_manager: 'Спросить менеджера',
+    continue_search: 'Продолжить поиск', change_quantity: 'Изменить количество',
+    remove_from_cart: 'Удалить товар', clear_cart: 'Очистить корзину', more: 'Ещё', confirm: 'Подтвердить'
+  },
+  kk: {
+    add_to_cart: 'Себетке қосу', show_analogs: 'Ұқсас нұсқалар', show_details: 'Сипаттамалар',
+    show_availability: 'Қалалардағы қор', show_certificates: 'Сертификаттар', compare: 'Салыстыру',
+    delivery: 'Жеткізу', payment: 'Төлем', cheaper_options: 'Арзанырақ нұсқа',
+    other_brand: 'Басқа өндіруші', clarify: 'Параметрлерді нақтылау', contact_manager: 'Менеджерден сұрау',
+    continue_search: 'Іздеуді жалғастыру', change_quantity: 'Санын өзгерту',
+    remove_from_cart: 'Тауарды жою', clear_cart: 'Себетті тазалау', more: 'Тағы', confirm: 'Растау'
+  }
+};
 
 const categoryQuestions = [
   ['Кабель / Провод', 'Подберите кабель для моего проекта'],
@@ -61,7 +86,9 @@ const elements = {
   cartContent: document.querySelector('#cart-content'), cartItems: document.querySelector('#cart-items'), cartCount: document.querySelector('#cart-count'),
   cartTotal: document.querySelector('#cart-total'), cartLink: document.querySelector('#cart-link'), connection: document.querySelector('#connection-label'),
   demoPanel: document.querySelector('#demo-panel'), demoQuestions: document.querySelector('#demo-questions'),
-  categories: document.querySelector('#category-questions')
+  categories: document.querySelector('#category-questions'), mobileCartButton: document.querySelector('#mobile-cart-button'),
+  mobileCartCount: document.querySelector('#mobile-cart-count'), cartCloseButton: document.querySelector('#cart-close-button'),
+  cartOverlay: document.querySelector('#cart-overlay')
 };
 
 function normalizePrice(value) {
@@ -91,19 +118,97 @@ function addMessage(role, content, options = {}) {
     ? 'max-w-[88%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-ektDark px-4 py-3 text-sm leading-relaxed text-white sm:max-w-[75%] sm:text-[15px]'
     : 'max-w-[92%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-700 shadow-sm sm:max-w-[78%] sm:text-[15px]';
   bubble.textContent = content;
-  if (options.cartLink) {
-    const link = document.createElement('a');
-    link.href = options.cartLink;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.className = 'mt-3 block font-semibold text-ektDark underline underline-offset-2';
-    link.textContent = 'Открыть корзину ассистента';
-    bubble.append(link);
-  }
   row.append(bubble);
   elements.messages.append(row);
   elements.messages.scrollTop = elements.messages.scrollHeight;
   return row;
+}
+
+function responseLanguage(text) {
+  return /[әғқңөұүһі]|\b(?:бар|қанша|калай|қалай|керек|рахмет|иә|жоқ|дана|себет)\b/i.test(text) ? 'kk' : 'ru';
+}
+
+function actionMessage(action, quantity, language) {
+  if (typeof action.message === 'string' && action.message.trim()) {
+    return action.message.replaceAll('{qty}', String(quantity));
+  }
+  const article = String(action.article || '').trim();
+  if (action.type === 'add_to_cart') {
+    return language === 'kk' ? `${article} тауарынан ${quantity} дана себетке қос` : `Добавь ${quantity} шт ${article} в корзину`;
+  }
+  return String(action.prompt || action.label || ACTION_LABELS[language][action.type] || '').trim();
+}
+
+function createQuantityControl(action, language) {
+  const control = document.createElement('div');
+  control.className = 'chat-action flex max-w-full items-center gap-1 overflow-hidden rounded-lg border border-ekt bg-white p-1 shadow-sm';
+  const max = Math.max(1, Math.min(999, Number(action.max_qty) || 999));
+  let quantity = Math.max(1, Math.min(max, Number(action.qty) || 1));
+  control.innerHTML = `
+    <button type="button" class="quantity-minus grid h-8 w-8 place-items-center rounded text-lg font-bold text-ektDark hover:bg-ektLight" aria-label="Уменьшить количество">−</button>
+    <span class="quantity-value min-w-8 text-center text-sm font-bold text-ektDark"></span>
+    <button type="button" class="quantity-plus grid h-8 w-8 place-items-center rounded text-lg font-bold text-ektDark hover:bg-ektLight" aria-label="Увеличить количество">+</button>
+    <button type="button" class="quantity-confirm h-8 rounded bg-accent px-3 text-xs font-bold text-ektDark hover:bg-yellow-400"></button>
+    <button type="button" class="quantity-cancel grid h-8 w-7 place-items-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Отменить">×</button>`;
+  const value = control.querySelector('.quantity-value');
+  const refresh = () => { value.textContent = quantity; };
+  refresh();
+  control.querySelector('.quantity-confirm').textContent = ACTION_LABELS[language].confirm;
+  control.querySelector('.quantity-minus').addEventListener('click', () => { quantity = Math.max(1, quantity - 1); refresh(); });
+  control.querySelector('.quantity-plus').addEventListener('click', () => { quantity = Math.min(max, quantity + 1); refresh(); });
+  control.querySelector('.quantity-confirm').addEventListener('click', () => sendMessage(actionMessage(action, quantity, language)));
+  control.querySelector('.quantity-cancel').addEventListener('click', () => control.replaceWith(createActionButton(action, language)));
+  return control;
+}
+
+function createActionButton(action, language) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chat-action rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs font-bold text-ektDark shadow-sm hover:border-ekt hover:bg-ektLight';
+  button.textContent = String(action.label || ACTION_LABELS[language][action.type] || action.type);
+  button.addEventListener('click', () => {
+    if (action.type === 'add_to_cart') {
+      const startWidth = button.getBoundingClientRect().width;
+      const control = createQuantityControl(action, language);
+      button.replaceWith(control);
+      const endWidth = control.scrollWidth;
+      control.animate?.(
+        [{ width: `${startWidth}px`, opacity: .75 }, { width: `${endWidth}px`, opacity: 1 }],
+        { duration: 240, easing: 'ease-out' }
+      );
+      return;
+    }
+    const message = actionMessage(action, Number(action.qty) || 1, language);
+    if (message) sendMessage(message);
+  });
+  return button;
+}
+
+function renderActions(messageRow, rawActions, reply) {
+  if (!Array.isArray(rawActions)) return;
+  const actions = rawActions.filter(action => {
+    if (!action || !ALLOWED_ACTION_TYPES.has(action.type)) return false;
+    return action.type !== 'add_to_cart' || Boolean(action.article);
+  });
+  if (!actions.length) return;
+  const language = responseLanguage(reply);
+  const wrapper = document.createElement('div');
+  wrapper.className = 'ml-1 flex max-w-[92%] flex-wrap gap-2';
+  const extra = [];
+  actions.forEach((action, index) => {
+    const button = createActionButton(action, language);
+    if (index < 3) wrapper.append(button); else extra.push(button);
+  });
+  if (extra.length) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'chat-action rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 hover:border-ekt hover:text-ektDark';
+    more.textContent = `${ACTION_LABELS[language].more} · ${extra.length}`;
+    more.addEventListener('click', () => { more.remove(); extra.forEach(button => wrapper.append(button)); });
+    wrapper.append(more);
+  }
+  messageRow.insertAdjacentElement('afterend', wrapper);
+  elements.messages.scrollTop = elements.messages.scrollHeight;
 }
 
 function showTyping() {
@@ -123,26 +228,36 @@ function isMobileViewport() {
   }
 }
 
-function revealCartOnMobile() {
-  if (mobileCartRevealed || !isMobileViewport()) return;
-  mobileCartRevealed = true;
-  window.setTimeout(() => {
-    if (typeof elements.cartCard.scrollIntoView !== 'function') return;
-    let behavior = 'smooth';
-    try {
-      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) behavior = 'auto';
-    } catch (error) {
-      behavior = 'auto';
-    }
-    elements.cartCard.scrollIntoView({ behavior, block: 'start' });
-  }, 0);
+function pulseMobileCart() {
+  if (!isMobileViewport()) return;
+  elements.mobileCartButton.animate?.(
+    [{ transform: 'translateY(-50%) scale(1)' }, { transform: 'translateY(-50%) scale(1.08)' }, { transform: 'translateY(-50%) scale(1)' }],
+    { duration: 420, easing: 'ease-out' }
+  );
+}
+
+function setCartDrawer(open) {
+  if (!isMobileViewport()) return;
+  elements.cartCard.classList.toggle('translate-x-full', !open);
+  elements.cartCard.classList.toggle('translate-x-0', open);
+  elements.cartCard.setAttribute('aria-hidden', String(!open));
+  elements.mobileCartButton.setAttribute('aria-expanded', String(open));
+  elements.mobileCartButton.classList.toggle('pointer-events-none', open);
+  elements.mobileCartButton.classList.toggle('opacity-0', open);
+  elements.cartOverlay.classList.toggle('pointer-events-none', !open);
+  elements.cartOverlay.classList.toggle('opacity-0', !open);
+  elements.cartCloseButton.classList.toggle('pointer-events-none', !open);
+  elements.cartCloseButton.classList.toggle('opacity-0', !open);
+  elements.cartCloseButton.style.transform = open ? 'translate(0, -50%)' : 'translate(100vw, -50%)';
+  document.body.classList.toggle('overflow-hidden', open);
+  if (open) elements.cartCloseButton.focus(); else elements.mobileCartButton.focus();
 }
 
 function updateCart(cart = [], cartLink = null) {
   const items = Array.isArray(cart) ? cart : [];
   const quantity = items.reduce((sum, item) => sum + normalizeQuantity(item.qty), 0);
-  elements.cartCard.classList.toggle('hidden', items.length === 0);
   elements.cartCount.textContent = quantity;
+  elements.mobileCartCount.textContent = quantity;
   if (cartLink) elements.cartLink.href = cartLink;
   elements.cartLink.classList.toggle('hidden', !cartLink);
   elements.cartEmpty.classList.toggle('hidden', items.length > 0);
@@ -179,7 +294,7 @@ function updateCart(cart = [], cartLink = null) {
     elements.cartTotal.textContent = formatMoney(knownTotal);
   }
 
-  if (items.length > 0) revealCartOnMobile();
+  if (items.length > 0) pulseMobileCart();
 }
 
 function getApiMessages() {
@@ -218,7 +333,7 @@ async function askAssistant() {
       throw error;
     }
     const data = await response.json();
-    if (!data || typeof data.reply !== 'string' || !Array.isArray(data.cart)) {
+    if (!data || typeof data.reply !== 'string' || !Array.isArray(data.cart) || (data.actions != null && !Array.isArray(data.actions))) {
       const error = new Error('Некорректный ответ API');
       error.kind = 'invalid-response';
       throw error;
@@ -270,7 +385,8 @@ async function sendMessage(content) {
     const data = await askAssistant();
     removeTyping();
     history.push({ role: 'assistant', content: data.reply });
-    addMessage('assistant', data.reply, { cartLink: data.cart.length ? data.cart_link : null });
+    const assistantRow = addMessage('assistant', data.reply);
+    renderActions(assistantRow, data.actions, data.reply);
     updateCart(data.cart, data.cart_link);
   } catch (error) {
     removeTyping();
@@ -371,6 +487,22 @@ function toggleDemo(force) {
   elements.demoPanel.classList.toggle('hidden', force ?? !elements.demoPanel.classList.contains('hidden'));
 }
 
+elements.mobileCartButton.addEventListener('click', () => setCartDrawer(true));
+elements.cartCloseButton.addEventListener('click', () => setCartDrawer(false));
+elements.cartOverlay.addEventListener('click', () => setCartDrawer(false));
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && elements.mobileCartButton.getAttribute('aria-expanded') === 'true') setCartDrawer(false);
+});
+window.addEventListener('resize', () => {
+  if (!isMobileViewport()) {
+    document.body.classList.remove('overflow-hidden');
+    elements.cartCard.setAttribute('aria-hidden', 'false');
+  } else if (elements.mobileCartButton.getAttribute('aria-expanded') !== 'true') {
+    elements.cartCard.setAttribute('aria-hidden', 'true');
+  }
+});
+
+elements.cartCard.setAttribute('aria-hidden', String(isMobileViewport()));
 addMessage('assistant', 'Здравствуйте! Я помогу найти электротехнический товар, проверить наличие и собрать корзину. Что вы ищете?');
 updateCart();
 loadDemoQuestions();
