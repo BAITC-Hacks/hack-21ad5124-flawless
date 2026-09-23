@@ -3,24 +3,26 @@
 | Файл | Кому | Что это |
 |---|---|---|
 | `system_prompt.txt` | бэк | system-сообщение для LLM |
-| `tools.json` | бэк | 6 инструментов в формате OpenAI function calling — можно передавать в `tools=` как есть |
 | `purchase_conditions.txt` | бэк | ответ `get_purchase_conditions()` (демо-текст) |
-| `catalog_demo.json` | бэк | синтетический каталог для `DEMO_MODE=1` |
+| `tools.json` | бэк | описания 6 инструментов; источник правды — `TOOLS` в `agent.py`, отсюда можно взять формулировки |
 | `demo_questions.json` | фронт | сценарий для кнопки «Пример диалога» + негативные проверки |
+| `TEAM_PLAN.md` | все | план работы команды |
+
+Каталог (живой API и `catalog_demo.json` для `DEMO_MODE`) ведёт бэкенд — формат задаёт `normalize_product` в `catalog.py`.
 
 ## Договорённости с бэком
 
-- `session_id` **не** передаётся модели — бэк сам подставляет его в `add_to_cart` / `get_cart` из запроса `/api/chat`. Так модель не может трогать чужую корзину.
-- `add_to_cart` требует `user_confirmation` — дословную фразу клиента. Бэк проверяет, что она есть в последнем сообщении `role:user`; если нет — возвращает модели ошибку и корзину не меняет.
+- Бэк читает `system_prompt.txt` и `purchase_conditions.txt` из `logic/`.
+- `session_id` модели не передаётся — бэк подставляет его в `add_to_cart` / `get_cart` сам.
+- Подтверждение клиента проверяет бэк (`purchase_confirmed` по последнему сообщению клиента); без него `add_to_cart` возвращает ошибку.
 - `add_to_cart` при `qty` > остатка возвращает ошибку с доступным количеством, корзину не меняет.
-- Ответы инструментов `add_to_cart` / `get_cart` содержат `cart_link`.
-- Аналог (`find_analogs`) = та же категория, в наличии, ближе по характеристикам.
+- Аналог (`find_analogs`) = та же категория, в наличии.
 
 ## Контракт `/api/chat` (общий для всех веток)
 
 ```json
 // запрос
-{ "session_id": "abc", "messages": [ {"role":"user","content":"есть автомат ABB на 16А?"} ] }
+{ "session_id": "abc", "messages": [ {"role":"user","content":"есть автомат на 25 А?"} ] }
 // ответ
-{ "reply": "...", "cart": [ {"article":"515292","name":"...","qty":2,"price":2900} ], "cart_link": "https://ekt.kz/cart" }
+{ "reply": "...", "cart": [ {"article":"DEMO-AV-16","name":"...","qty":2,"price":2150} ], "cart_link": "https://ekt.kz/cart" }
 ```

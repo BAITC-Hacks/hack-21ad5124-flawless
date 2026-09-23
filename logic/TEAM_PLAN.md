@@ -7,11 +7,11 @@
 **Структура репозитория.** Каждый меняет только свою папку. Нужна правка в чужой — просим владельца.
 
 ```
-/app/            ← бэкенд  (main.py, agent.py, tools.py, catalog.py, cart.py)
-/static/         ← фронт   (index.html, app.js)
-/logic/          ← Мухтар  (промпт, tools.json, условия, демо-каталог, сценарий)
-requirements.txt, .env.example   ← бэкенд
-README.md                        ← фронт
+main.py, agent.py, catalog.py, catalog_demo.json,
+requirements.txt, render.yaml, tests/   ← бэкенд (ветка backend)
+/static/                                ← фронт  (ветка Yernurwork)
+/logic/                                 ← Мухтар (промпт, условия, tools.json, сценарий)
+README.md                               ← фронт
 ```
 
 **Утверждаем до начала работы:**
@@ -20,11 +20,11 @@ README.md                        ← фронт
    // запрос
    { "session_id": "abc", "messages": [ {"role":"user","content":"..."} ] }
    // ответ
-   { "reply": "...", "cart": [ {"article":"515292","name":"...","qty":2,"price":2900} ], "cart_link": "https://ekt.kz/cart" }
+   { "reply": "...", "cart": [ {"article":"DEMO-AV-16","name":"...","qty":2,"price":2150} ], "cart_link": "https://ekt.kz/cart" }
    ```
-2. **`logic/tools.json`** — `session_id` бэк подставляет сам (модели не передаётся); в `add_to_cart` есть поле `user_confirmation` — бэк проверяет, что фраза есть в последнем сообщении клиента.
-3. **Поля товара** — ключи из `catalog_demo.json`: `article, name, category, specs, certificates, price, stock, availability`. Бэк приводит данные живого API ekt.kz к этим же полям, чтобы инструменты и промпт одинаково работали на демо-каталоге и на реальном.
-4. **Пути** — бэк читает файлы прямо из `logic/`, никуда их не копирует.
+2. **Инструменты** — источник правды `TOOLS` в `agent.py`. `session_id` бэк подставляет сам (модели не передаётся); подтверждение клиента бэк проверяет по его последнему сообщению (`purchase_confirmed`).
+3. **Каталог** — ведёт бэкенд: формат задаёт живой API ekt.kz и `normalize_product` в `catalog.py`; демо-каталог — `catalog_demo.json` в корне, в том же формате.
+4. **Пути** — бэк читает `system_prompt.txt` и `purchase_conditions.txt` из `logic/`, свои копии в корне удаляет.
 5. **Секреты** — логин/пароль API ekt.kz и `OPENAI_API_KEY` только в переменных окружения, в репозиторий не коммитим.
 
 ## 2. Работаем параллельно, не дожидаясь друг друга
@@ -32,12 +32,12 @@ README.md                        ← фронт
 | Кто | Чем заменяет то, что ещё не готово |
 |---|---|
 | **Фронт** | Заглушка в `app.js`: пока нет бэка, возвращает готовый ответ в формате `{reply, cart, cart_link}` |
-| **Бэк** | `DEMO_MODE=1` и `logic/catalog_demo.json`; живой API подключает потом |
+| **Бэк** | `DEMO_MODE=1` и свой `catalog_demo.json`; живой API уже подключён |
 | **Мухтар** | Проверяет промпт и `tools.json` в OpenAI Playground, ответы инструментов подставляет вручную; прогоняет `demo_questions.json`, особенно негативные проверки |
 
 ## 3. Правила Git
 
-- Своя ветка у каждого: `feature/logic`, `feature/backend`, `feature/frontend`.
+- Своя ветка у каждого: `feature/logic`, `backend`, `Yernurwork` (фронт).
 - Коммит минимум раз в час со своего аккаунта (требование организаторов).
 - Перед PR подтягиваем `main` в свою ветку: `git pull origin main`. Конфликты решаем у себя, не в `main`.
 - В `main` — только через PR. Сливает бэкендер.
@@ -58,7 +58,7 @@ README.md                        ← фронт
 
 **Мухтар (логика):**
 1. ~~Запушить `feature/logic`~~ — готово. Открыть PR в `main`.
-2. Согласовать с бэком `tools.json` (`session_id`, `user_confirmation`).
+2. Попросить бэк читать `system_prompt.txt` и `purchase_conditions.txt` из `logic/`.
 3. Отдать фронту `demo_questions.json` и формулировку проблемы/ценности для README (из питча).
 4. Прогнать промпт в Playground, поправить ошибки.
 5. На КТ2 и КТ3 проверять ответы агента на сценариях — отвечает за соблюдение запретов.
@@ -66,4 +66,4 @@ README.md                        ← фронт
 
 **Бэкенд:** каркас FastAPI → каталог и кэш → 6 инструментов → цикл агента → статика → деплой. Держит `main` и слияния. Подробно — `EKT_02_BACKEND.md`.
 
-**Фронтенд:** окно чата + корзина → запросы к `/api/chat` → кнопка «Пример диалога» → README с 5 сценариями проверки. Подробно — `EKT_03_FRONTEND.md`.
+**Фронтенд:** не писать чат с нуля — в ветке `backend` уже есть рабочий `static/index.html`; после слияния бэка в `main` сделать ветку от `main` и дорабатывать его. Окно чата + корзина → запросы к `/api/chat` → кнопка «Пример диалога» → README с 5 сценариями проверки. Подробно — `EKT_03_FRONTEND.md`.

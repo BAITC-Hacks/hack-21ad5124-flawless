@@ -7,9 +7,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "description": "Поисковый запрос: название, артикул или категория, например «автомат ABB 16А»" }
+          "query": {
+            "type": "string",
+            "description": "Поисковый запрос: название, артикул или категория, например «автомат ABB 16А»"
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       }
     }
   },
@@ -21,9 +26,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "article": { "type": "string", "description": "Артикул товара" }
+          "article": {
+            "type": "string",
+            "description": "Артикул товара"
+          }
         },
-        "required": ["article"]
+        "required": [
+          "article"
+        ]
       }
     }
   },
@@ -35,9 +45,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "article": { "type": "string", "description": "Артикул товара, для которого нужен аналог" }
+          "article": {
+            "type": "string",
+            "description": "Артикул товара, для которого нужен аналог"
+          }
         },
-        "required": ["article"]
+        "required": [
+          "article"
+        ]
       }
     }
   },
@@ -46,22 +61,34 @@
     "function": {
       "name": "get_purchase_conditions",
       "description": "Условия покупки: способы оплаты, доставка, минимальная партия.",
-      "parameters": { "type": "object", "properties": {} }
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
     }
   },
   {
     "type": "function",
     "function": {
       "name": "add_to_cart",
-      "description": "Добавить товар в корзину клиента. Вызывать ТОЛЬКО после явного подтверждения клиента в его последнем сообщении. qty не больше остатка.",
+      "description": "Добавить товар в корзину клиента. Вызывать ТОЛЬКО после явного подтверждения клиента в его последнем сообщении. qty не больше остатка. session_id сервер подставляет сам.",
       "parameters": {
         "type": "object",
         "properties": {
-          "article": { "type": "string", "description": "Артикул товара" },
-          "qty": { "type": "integer", "minimum": 1, "description": "Количество, не больше остатка" },
-          "user_confirmation": { "type": "string", "description": "Дословная фраза клиента, которой он подтвердил добавление, например «да, добавь 2»" }
+          "article": {
+            "type": "string",
+            "description": "Артикул товара"
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Количество, не больше остатка"
+          }
         },
-        "required": ["article", "qty", "user_confirmation"]
+        "required": [
+          "article",
+          "qty"
+        ]
       }
     }
   },
@@ -70,7 +97,10 @@
     "function": {
       "name": "get_cart",
       "description": "Текущая корзина клиента и ссылка на неё.",
-      "parameters": { "type": "object", "properties": {} }
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
     }
   }
 ]
