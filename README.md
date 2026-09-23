@@ -1,38 +1,64 @@
-# EKT AI Assistant
+# EKT AI — ассистент интернет-магазина
 
-FastAPI backend and a small browser demo for searching electrical products, checking stock, finding alternatives, answering purchase questions, and keeping a local cart.
+EKT AI помогает клиентам ekt.kz подобрать электротехнический товар, узнать наличие и цену, найти аналог и собрать корзину без ожидания менеджера.
 
-## Run locally
+## Архитектура
 
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-$env:DEMO_MODE = "1"
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload
+```text
+Веб-интерфейс → POST /api/chat → FastAPI → LLM-агент → каталог ekt.kz
+                                      ↓
+                              корзина и ссылка на ekt.kz
 ```
 
-Open `http://127.0.0.1:8000`. Demo catalog prices, stock, and certificates are synthetic. `GET /health` reports `catalog_source: "demo"` in this mode.
+Фронтенд хранит историю диалога и `session_id` только в памяти открытой вкладки. Если API недоступен, интерфейс автоматически переходит в автономный демонстрационный режим.
 
-For the live catalog, set `DEMO_MODE=0`, `EKT_API_USER`, and `EKT_API_PASSWORD`. Set `OPENAI_API_KEY` to enable the OpenAI agent; without it the offline assistant runs only in demo mode. If the live catalog cannot be loaded, `/health` returns 503 and chat says that the catalog is unavailable. It never substitutes synthetic products for live products.
+## Технологии
 
-The backend uses `logic/system_prompt.txt` after the `feature/logic` branch is merged. Its `logic/purchase_conditions.txt` contains demo terms and is used only in demo mode; live mode uses the cautious root-level conditions text. The demo catalog stays at the repository root, and the backend's `TOOLS` definitions remain the tool contract. Catalog normalization also supports warehouse stock and `specs` fields.
+- FastAPI и Pydantic;
+- OpenAI API с вызовом инструментов;
+- HTML, JavaScript и Tailwind CSS CDN;
+- API каталога ekt.kz или синтетический каталог при `DEMO_MODE=1`.
 
-## API
+## Запуск
 
-`POST /api/chat` accepts:
+1. Установите зависимости:
 
-```json
-{"session_id":"browser-session-id","messages":[{"role":"user","content":"Есть лампа 12 Вт?"}]}
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-It returns `reply`, `cart` (article, name, qty, price), and `cart_link`. The caller sends the conversation history in `messages`. The latest message must be from the user. The cart is held in process memory per `session_id`; it disappears on restart and is not synchronized with ekt.kz. The link opens the EKT cart page, where the customer must create the order separately.
+2. Настройте переменные окружения:
 
-Adding a product requires a current user instruction or acceptance of a specific assistant offer. The backend checks the target article, quantity, available stock, and repeated requests independently of the model. The model cannot select another session's cart through a tool call.
+   ```env
+   OPENAI_API_KEY=...
+   MODEL_NAME=gpt-4.1-mini
+   DEMO_MODE=1
+   ```
 
-## Checks
+3. Запустите приложение:
 
-```powershell
-.\.venv\Scripts\python.exe -X utf8 -m unittest discover -s tests -v
-```
+   ```bash
+   uvicorn main:app --reload
+   ```
 
-Tests cover catalog normalization, search and alternatives, confirmation and stock limits, repeated cart requests, session isolation, the agent tool cycle, and demo/live HTTP behavior.
+4. Откройте `http://127.0.0.1:8000`.
+
+Живая ссылка на демо: будет добавлена после деплоя.
+
+## Данные
+
+В рабочем режиме агент получает актуальные товары через API каталога ekt.kz. Для разработки и защиты предусмотрен синтетический каталог с теми же полями: артикул, название, категория, характеристики, сертификаты, цена, остаток и доступность.
+
+Цены и остатки показываются как ориентировочные. Ассистент не принимает платёжные данные и не изменяет корзину без явного подтверждения пользователя.
+
+## Проверка пяти сценариев
+
+В интерфейсе нажмите **«Пример диалога»** и последовательно отправьте вопросы:
+
+1. **Наличие:** «Есть автомат ABB на 16А?»
+2. **Аналог:** «Нет в наличии? А какой аналог посоветуете?»
+3. **Условия:** «Как у вас с оплатой и доставкой по Алматы? Есть минимальная партия?»
+4. **Подтверждение:** «Да, добавь 2 штуки автомата на 16А в корзину».
+5. **Корзина:** «Дай ссылку на корзину».
+
+Ожидаемый результат: ассистент отвечает по каталогу, предлагает доступную замену, объясняет условия, добавляет товар только после подтверждения и возвращает ссылку на корзину ekt.kz.

@@ -3,60 +3,127 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>EKT · ИИ-консультант</title>
+  <meta name="description" content="ИИ-консультант группы компаний Электрокомплект — поиск товаров и помощь с корзиной.">
+  <title>EKT — ИИ-консультант</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: {
+      colors: { ekt: '#287895', ektDark: '#07547a', ektLight: '#eaf4f8', accent: '#f9b500', canvas: '#f5f6f7' },
+      boxShadow: { panel: '0 12px 35px rgba(7,84,122,.10)' }
+    }}};
+  </script>
   <style>
-    body { font: 16px/1.5 system-ui, sans-serif; margin: 0; background: #f4f6f8; color: #172338; }
-    main { max-width: 720px; margin: 5vh auto; padding: 24px; background: white; border-radius: 16px; box-shadow: 0 6px 30px #142a4414; }
-    h1 { margin-top: 0; font-size: 1.5rem; }
-    #messages { min-height: 300px; max-height: 55vh; overflow: auto; }
-    .message { margin: 12px 0; padding: 12px 16px; border-radius: 12px; white-space: pre-wrap; background: #edf2f7; }
-    .user { background: #dceeff; margin-left: 12%; }
-    form { display: flex; gap: 8px; margin-top: 16px; }
-    input { flex: 1; padding: 12px; border: 1px solid #bccad8; border-radius: 8px; font: inherit; }
-    button { border: 0; border-radius: 8px; padding: 12px 18px; background: #0966b7; color: white; font: inherit; cursor: pointer; }
-    #cart { margin-top: 12px; font-size: .9rem; }
+    * { scrollbar-width: thin; scrollbar-color: #b9ccd5 transparent; }
+    body { min-height: 100dvh; font-family: Arial, Helvetica, sans-serif; }
+    #messages { scroll-behavior: smooth; }
+    .typing-dot { animation: pulse 1.15s infinite ease-in-out; }
+    .typing-dot:nth-child(2) { animation-delay: .16s; }
+    .typing-dot:nth-child(3) { animation-delay: .32s; }
+    @keyframes pulse { 0%,70%,100% { opacity:.25; transform:translateY(0) } 35% { opacity:1; transform:translateY(-2px) } }
+    @media (prefers-reduced-motion: reduce) { *, #messages { animation:none!important; scroll-behavior:auto!important; } }
   </style>
 </head>
-<body>
-<main>
-  <h1>Консультант EKT</h1>
-  <div id="messages" aria-live="polite"></div>
-  <form id="chat-form"><input id="question" autocomplete="off" placeholder="Например: покажи лампы" required><button>Отправить</button></form>
-  <div id="cart">Корзина пуста.</div>
-</main>
-<script>
-  const sessionId = sessionStorage.getItem('ekt-session') || crypto.randomUUID();
-  sessionStorage.setItem('ekt-session', sessionId);
-  const history = [];
-  const messages = document.getElementById('messages');
-  function bubble(role, content) {
-    const node = document.createElement('div');
-    node.className = 'message ' + role;
-    node.textContent = content;
-    messages.append(node);
-    messages.scrollTop = messages.scrollHeight;
-  }
-  document.getElementById('chat-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    const input = document.getElementById('question');
-    const content = input.value.trim();
-    if (!content) return;
-    input.value = '';
-    history.push({role: 'user', content});
-    bubble('user', content);
-    try {
-      const response = await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: sessionId, messages: history})});
-      if (!response.ok) throw new Error('Сервер вернул ошибку');
-      const data = await response.json();
-      history.push({role: 'assistant', content: data.reply});
-      bubble('assistant', data.reply);
-      const cart = data.cart.map(item => `${item.name} × ${item.qty}`).join('; ');
-      document.getElementById('cart').textContent = cart ? `Локальная корзина: ${cart}` : 'Корзина пуста.';
-    } catch {
-      history.pop();
-      bubble('assistant', 'Не удалось связаться с сервером. Попробуйте ещё раз.');
-    }
-  });
-</script>
+<body class="bg-canvas text-slate-900 antialiased">
+  <div class="border-b border-white/20 bg-ekt text-white">
+    <div class="mx-auto flex max-w-[1320px] items-center justify-between gap-5 px-4 py-2 text-xs sm:px-6">
+      <div class="flex items-center gap-2"><span aria-hidden="true">⌖</span><span>Караганда</span></div>
+      <nav class="hidden items-center gap-8 md:flex" aria-label="Служебная навигация">
+        <span>Личный кабинет</span><span>B2B — EKT PRO</span><span>Покупателям</span><span>Оставить заявку</span>
+      </nav>
+      <div class="text-right font-bold"><span class="hidden sm:inline">+7 (778) 752-95-38 · </span>+7 (707) 755-10-93</div>
+    </div>
+  </div>
+
+  <header class="border-b border-slate-200 bg-white">
+    <div class="mx-auto flex max-w-[1320px] items-center gap-3 px-4 py-3 sm:px-6">
+      <div class="flex shrink-0 items-center gap-2">
+        <img src="/static/assets/logo.jpg" alt="Электрокомплект" class="h-14 w-14 rounded-full object-cover sm:h-16 sm:w-16">
+        <div class="hidden leading-tight xl:block"><p class="text-xs tracking-wide text-slate-500">ГРУППА КОМПАНИЙ</p><p class="font-bold text-ektDark">ЭЛЕКТРОКОМПЛЕКТ</p></div>
+      </div>
+      <button type="button" class="hidden h-11 items-center gap-3 rounded border-2 border-ekt px-5 font-semibold text-ekt transition hover:bg-ekt hover:text-white sm:flex">
+        Каталог <span class="text-xl leading-none">☰</span>
+      </button>
+      <div class="flex min-w-0 flex-1 items-center rounded-full bg-slate-100 px-4 py-3 text-sm text-slate-400">
+        <svg class="mr-2 shrink-0" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m16.5 16.5 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span class="truncate">ИИ-поиск по каталогу EKT</span>
+      </div>
+      <div class="hidden items-center gap-5 text-sm lg:flex"><span>Сравнить</span><span>Избранное</span><span class="font-semibold text-ektDark">Корзина</span></div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-[1320px] px-3 py-4 sm:px-6 sm:py-6">
+    <div class="mb-4 overflow-x-auto rounded border border-slate-200 bg-white shadow-sm">
+      <div id="category-questions" class="flex min-w-max divide-x divide-slate-200"></div>
+    </div>
+
+    <div class="grid min-h-[660px] gap-4 lg:grid-cols-[minmax(0,1fr)_350px]">
+      <section class="flex min-h-[70vh] flex-col overflow-hidden rounded border border-slate-200 bg-white shadow-panel lg:min-h-0" aria-label="Чат с консультантом">
+        <div class="flex items-center justify-between gap-4 bg-ektDark px-4 py-4 text-white sm:px-6">
+          <div class="flex items-center gap-3">
+            <div class="grid h-10 w-10 place-items-center rounded-full bg-white/15" aria-hidden="true">
+              <svg width="23" height="23" viewBox="0 0 24 24" fill="none"><path d="M5 17.5 3.5 21l4.2-1.5c1.2.6 2.7 1 4.3 1 5 0 9-3.7 9-8.3S17 4 12 4s-9 3.7-9 8.2c0 2 .7 3.8 2 5.3Z" stroke="currentColor" stroke-width="1.8"/></svg>
+            </div>
+            <div><h1 class="font-bold sm:text-lg">Онлайн-консультант EKT</h1><p class="text-xs text-white/70">Поиск товаров, аналогов и проверка наличия</p></div>
+          </div>
+          <div class="flex items-center gap-2 text-xs"><span class="h-2 w-2 rounded-full bg-emerald-400"></span><span id="connection-label">На связи</span></div>
+        </div>
+
+        <div id="messages" class="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[#fbfcfd] px-4 py-5 sm:px-7 sm:py-7" aria-live="polite" aria-label="Сообщения чата"></div>
+
+        <div id="demo-panel" class="hidden border-t border-slate-200 bg-ektLight px-4 py-3 sm:px-6">
+          <div class="mb-2 flex items-center justify-between gap-4">
+            <p class="text-xs font-bold uppercase tracking-wider text-ektDark">Выберите пример вопроса</p>
+            <button id="close-demo" type="button" class="text-xs text-slate-500 hover:text-ektDark">Закрыть</button>
+          </div>
+          <div id="demo-questions" class="flex gap-2 overflow-x-auto pb-1"></div>
+        </div>
+
+        <div class="border-t border-slate-200 bg-white p-3 sm:p-4">
+          <form id="chat-form" class="flex items-end gap-2">
+            <button id="demo-button" type="button" class="hidden min-h-12 shrink-0 rounded border-2 border-ekt px-4 text-sm font-bold text-ekt transition hover:bg-ekt hover:text-white sm:block">Пример диалога</button>
+            <label class="sr-only" for="question">Ваш вопрос</label>
+            <textarea id="question" rows="1" maxlength="8000" required autocomplete="off" placeholder="Например: подберите автомат Schneider на 16 А" class="max-h-32 min-h-12 flex-1 resize-none rounded border border-slate-300 px-4 py-3 outline-none transition placeholder:text-slate-400 focus:border-ekt focus:ring-4 focus:ring-sky-100"></textarea>
+            <button id="send-button" type="submit" class="grid h-12 w-12 shrink-0 place-items-center rounded bg-accent text-ektDark transition hover:bg-yellow-400 focus:outline-none focus:ring-4 focus:ring-yellow-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label="Отправить сообщение">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 4 17 8-17 8 3-8-3-8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7 12h14" stroke="currentColor" stroke-width="2"/></svg>
+            </button>
+          </form>
+          <button id="demo-button-mobile" type="button" class="mt-2 text-left text-xs font-bold text-ekt sm:hidden">Показать примеры вопросов</button>
+          <p class="mt-2 text-center text-[11px] text-slate-400">Цены и остатки ориентировочные — уточняйте условия у менеджера EKT</p>
+        </div>
+      </section>
+
+      <aside id="cart-card" class="hidden h-fit overflow-hidden rounded border border-slate-200 bg-white shadow-panel lg:block" aria-labelledby="cart-title">
+        <div class="border-b border-slate-200 bg-ekt px-5 py-4 text-white">
+          <div class="flex items-center justify-between">
+            <div><p class="text-xs font-bold uppercase tracking-wider text-white/70">Ваш заказ</p><h2 id="cart-title" class="mt-1 text-xl font-bold">Корзина</h2></div>
+            <span id="cart-count" class="grid h-9 min-w-9 place-items-center rounded-full bg-accent px-2 text-sm font-bold text-ektDark">0</span>
+          </div>
+        </div>
+        <div id="cart-empty" class="px-6 py-12 text-center">
+          <div class="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-full bg-ektLight text-ekt">
+            <svg width="27" height="27" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 4h2l2.2 10.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 2-1.6L20.5 8H6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="20" r="1" fill="currentColor"/><circle cx="18" cy="20" r="1" fill="currentColor"/></svg>
+          </div>
+          <p class="font-bold text-ektDark">Корзина пока пуста</p>
+          <p class="mt-1 text-sm leading-relaxed text-slate-500">Напишите, какой товар нужен — ассистент поможет его найти</p>
+        </div>
+        <div id="cart-content" class="hidden">
+          <div id="cart-items" class="divide-y divide-slate-100 px-5"></div>
+          <div class="border-t border-slate-200 p-5">
+            <div class="mb-4 flex items-center justify-between"><span class="text-sm text-slate-500">Итого</span><strong id="cart-total" class="text-xl text-ektDark">0 ₸</strong></div>
+            <a id="cart-link" href="https://ekt.kz/cart" target="_blank" rel="noopener noreferrer" class="block rounded bg-accent px-4 py-3 text-center font-bold text-ektDark transition hover:bg-yellow-400">Перейти в корзину</a>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <footer class="mt-4 bg-ekt text-white">
+    <div class="mx-auto flex max-w-[1320px] flex-col justify-between gap-3 px-6 py-6 text-sm sm:flex-row sm:items-center">
+      <div><p class="font-bold">Группа компаний Электрокомплект</p><p class="mt-1 text-white/65">Электротехника для бизнеса и дома</p></div>
+      <div class="flex gap-6 text-white/80"><span>Доставка и оплата</span><span>Контакты</span><span>ekt.kz</span></div>
+    </div>
+  </footer>
+
+  <script src="/static/app.js" defer></script>
 </body>
 </html>
