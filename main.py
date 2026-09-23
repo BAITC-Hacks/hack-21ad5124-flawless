@@ -21,6 +21,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from attachments import (AttachmentInput, AttachmentResult, bulk_add_from_context,
+                         describe_images, format_context, history_context,
+                         process_attachments, summarize_document)
 from agent import CART_LINK, ShopTools, contains_payment_data, run_demo_agent, run_openai_agent
 from cart_state import CartStateCodec, InvalidCartToken
 from catalog import Catalog
@@ -66,7 +69,7 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=8000)
+    content: str = Field(min_length=1, max_length=40_000)
 
     @field_validator("content", mode="before")
     @classmethod
@@ -82,6 +85,8 @@ class ChatMessage(BaseModel):
         visible = any(not character.isspace() and not unicodedata.category(character).startswith("C") for character in value)
         if not visible:
             raise ValueError("Сообщение не может быть пустым")
+        if len(value) > (40_000 if "[Вложение:" in value else 8_000):
+            raise ValueError("Сообщение слишком длинное")
         return value
 
 
@@ -91,6 +96,7 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
     cart_token: str | None = Field(default=None, max_length=8192)
+    attachments: list[AttachmentInput] = Field(default_factory=list)
 
     @field_validator("session_id", mode="before")
     @classmethod
@@ -107,7 +113,8 @@ class ChatRequest(BaseModel):
 
     @model_validator(mode="after")
     def limit_context_size(self):
-        if sum(len(message.content) for message in self.messages) > MAX_CONTEXT_CHARS:
+        limit = 48_000 if any("[Вложение:" in message.content for message in self.messages) else MAX_CONTEXT_CHARS
+        if sum(len(message.content) for message in self.messages) > limit:
             raise ValueError("История диалога слишком длинная")
         return self
 
@@ -126,6 +133,7 @@ class ChatResponse(BaseModel):
     cart_token: str | None = None
     assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system"
     actions: list[ChatAction] = Field(default_factory=list)
+    attachments: list[AttachmentResult] = Field(default_factory=list)
 
 
 @asynccontextmanager
@@ -239,6 +247,8 @@ def _request_hash(request: ChatRequest) -> str:
     payload = {
         "messages": [message.model_dump() for message in request.messages],
         "cart_token": request.cart_token,
+        "attachments": [(item.name, item.mime, hashlib.sha256(item.data_base64.encode("ascii", errors="replace")).hexdigest())
+                        for item in request.attachments],
     }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -288,6 +298,7 @@ def _response(
     assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system",
     cart_before: list[dict] | None = None,
     action_state: ActionState | None = None,
+    attachment_results: list[AttachmentResult] | None = None,
 ) -> ChatResponse:
     reply = str(reply or "").strip() or "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
     reply = re.sub(r"(?:Ссылка\s*:\s*)?https://ekt\.kz/cart", "", reply, flags=re.IGNORECASE)
@@ -318,6 +329,7 @@ def _response(
         cart_token=token,
         assistant_source=assistant_source,
         actions=actions,
+        attachments=attachment_results or [],
     )
 
 
@@ -331,6 +343,7 @@ def _finish_turn(
     assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system",
     cart_before: list[dict] | None = None,
     action_state: ActionState | None = None,
+    attachment_results: list[AttachmentResult] | None = None,
 ) -> ChatResponse:
     response = _response(
         session_id,
@@ -341,6 +354,7 @@ def _finish_turn(
         assistant_source,
         cart_before,
         action_state,
+        attachment_results,
     )
     with app.state.history_lock:
         app.state.histories[session_id] = _bounded_history(
@@ -394,6 +408,21 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
             http_request,
         )
 
+    processed = process_attachments(request.attachments)
+    prior_attachment_context = history_context(incoming[:-1])
+    api_key = os.getenv("OPENAI_API_KEY")
+    model = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+    if processed.image_urls and api_key:
+        describe_images(processed, api_key, model)
+    elif processed.image_urls:
+        for result in processed.results:
+            if result.kind == "image" and result.status == "ok":
+                result.status = "error"
+                result.note = "Для распознавания фото требуется ИИ-модель"
+        processed.image_urls.clear()
+    current_attachment_context = format_context(processed.results)
+    attachment_context = (prior_attachment_context + "\n\n" + current_attachment_context).strip()[-48_000:]
+
     if app.state.catalog.source == "unavailable":
         return _finish_turn(
             request.session_id,
@@ -403,23 +432,29 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
             tools,
             http_request,
             assistant_source="unavailable",
+            attachment_results=processed.results,
         )
 
+    bulk_reply = bulk_add_from_context(latest_user["content"], prior_attachment_context, tools, request.session_id)
+    if bulk_reply is not None:
+        return _finish_turn(request.session_id, request_hash, messages, bulk_reply, tools, http_request,
+                            "demo", cart_before, action_state, processed.results)
+
+    if request.attachments and not any(result.status == "ok" for result in processed.results):
+        return _finish_turn(request.session_id, request_hash, messages,
+                            "Не удалось прочитать вложения. Проверьте сообщения об ошибках под файлами.",
+                            tools, http_request, attachment_results=processed.results)
+
     demo_mode = app.state.catalog.demo_mode
-    api_key = os.getenv("OPENAI_API_KEY")
     try:
         if api_key:
-            reply = run_openai_agent(
-                messages,
-                request.session_id,
-                tools,
-                os.getenv("MODEL_NAME", "gpt-4.1-mini"),
-                api_key,
-                action_state,
-            )
+            extra = ({"attachment_context": attachment_context, "image_urls": processed.image_urls}
+                     if attachment_context or processed.image_urls else {})
+            reply = run_openai_agent(messages, request.session_id, tools, model, api_key, action_state, **extra)
             assistant_source = "openai"
         elif demo_mode:
-            reply = run_demo_agent(messages, request.session_id, tools)
+            reply = (summarize_document(current_attachment_context, tools, request.session_id, messages)
+                     if current_attachment_context else None) or run_demo_agent(messages, request.session_id, tools)
             assistant_source = "demo"
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
@@ -427,7 +462,8 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
     except Exception:
         LOG.exception("Chat agent failed")
         if demo_mode:
-            reply = run_demo_agent(messages, request.session_id, tools)
+            reply = (summarize_document(current_attachment_context, tools, request.session_id, messages)
+                     if current_attachment_context else None) or run_demo_agent(messages, request.session_id, tools)
             assistant_source = "demo"
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
@@ -442,6 +478,7 @@ def _chat_unlocked(request: ChatRequest, http_request: Request) -> ChatResponse:
         assistant_source,
         cart_before,
         action_state,
+        processed.results,
     )
 
 
