@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -21,6 +22,26 @@ from catalog import Catalog
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
+DEMO_QUESTIONS_FALLBACK = [
+    "Есть автомат на 25 А?",
+    "DEMO-AV-25 нет в наличии? Какой аналог посоветуете?",
+    "Как у вас с оплатой и доставкой по Алматы? Есть минимальная партия?",
+    "Да, добавь 2 шт DEMO-AV-16 в корзину",
+    "Покажи корзину и дай ссылку",
+]
+
+
+def load_demo_questions() -> list[str]:
+    """Expose the logic-owned demo script without duplicating it in the UI."""
+    path = BASE_DIR / "logic" / "demo_questions.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        questions = [item["user"].strip() for item in payload["script"] if isinstance(item, dict) and isinstance(item.get("user"), str) and item["user"].strip()]
+        if questions:
+            return questions
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        LOG.warning("Could not load logic/demo_questions.json", exc_info=True)
+    return DEMO_QUESTIONS_FALLBACK.copy()
 
 
 class ChatMessage(BaseModel):
@@ -71,6 +92,11 @@ def health():
     catalog = app.state.catalog
     status = {"ok": catalog.source != "unavailable", "catalog_source": catalog.source, "products": len(catalog.products)}
     return JSONResponse(status, status_code=200 if status["ok"] else 503)
+
+
+@app.get("/api/demo-questions")
+def demo_questions():
+    return {"questions": load_demo_questions()}
 
 
 @app.post("/api/chat", response_model=ChatResponse)

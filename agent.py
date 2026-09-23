@@ -25,13 +25,17 @@ def purchase_confirmed(messages: list[dict]) -> bool:
     if not messages or messages[-1].get("role") != "user":
         return False
     text = str(messages[-1].get("content") or "").casefold().strip()
-    if not text or re.search(r"\b(?:не|нет|отмена|отменить|без)\b.{0,40}(?:добав|клад|полож|корзин)", text):
+    if not text or re.search(r"\b(?:не|нет|отмена|отменить|без|жоқ|жок)\b.{0,40}(?:добав|клад|полож|корзин|қос|кос|себет)", text):
         return False
-    if re.search(r"\b(?:добав(?:ь|ьте|ить|ляем)|полож(?:и|ите|ить)|клади|беру|возьму)\b", text):
+    if re.search(r"\b(?:қоспа\w*|коспа\w*)\b", text):
+        return False
+    explicit_add = re.search(r"\b(?:добав(?:ь|ьте|ить|ляем)|полож(?:и|ите|ить)|клади|беру|возьму|қос\w*|кос\w*)\b", text)
+    explicit_add = explicit_add or re.search(r"\bсебетке\b.{0,20}\bсал\w*\b", text)
+    if explicit_add:
         return not text.endswith("?")
-    if re.fullmatch(r"(?:да|ага|ок|окей|подтверждаю|согласен|согласна)[.!\s]*", text):
+    if re.fullmatch(r"(?:да|ага|ок|окей|подтверждаю|согласен|согласна|иә|иа)[.!\s]*", text):
         previous = next((m for m in reversed(messages[:-1]) if m.get("role") == "assistant"), None)
-        return bool(previous and re.search(r"корзин|добав", str(previous.get("content") or "").casefold()))
+        return bool(previous and re.search(r"корзин|добав|себет|қос|кос", str(previous.get("content") or "").casefold()))
     return False
 
 
@@ -47,7 +51,11 @@ def cart_intent_matches(messages: list[dict], product: dict, qty: int, catalog: 
             return False
     elif product["name"].casefold() not in latest:
         replies = [str(m.get("content") or "").casefold() for m in reversed(messages[:-1]) if m.get("role") == "assistant"]
-        direct_offer = bool(replies and re.search(r"корзин|добав", replies[0]) and mentioned_articles(replies[0]) == [product["article"]])
+        direct_offer = bool(
+            replies
+            and re.search(r"корзин|добав|себет|қос|кос", replies[0])
+            and (mentioned_articles(replies[0]) == [product["article"]] or product["name"].casefold() in replies[0])
+        )
         generic_words = {"автоматический", "выключатель", "светодиодная", "светодиодный", "лампа", "товар"}
         distinguishing = [word for word in re.findall(r"[^\W\d_]{4,}", product["name"].casefold()) if word not in generic_words and word in latest]
         contextual_name = False
@@ -60,13 +68,13 @@ def cart_intent_matches(messages: list[dict], product: dict, qty: int, catalog: 
         if not direct_offer and not contextual_name:
             return False
     without_article = latest.replace(product["article"].casefold(), " ")
-    quantities = re.findall(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?)(?=\W|$)", without_article)
+    quantities = re.findall(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?|дана)(?=\W|$)", without_article)
     if not quantities:
-        quantities = re.findall(r"\b(?:добав\w*|полож\w*|беру|возьму)\s+(\d+)\b", without_article)
-    if not quantities and re.fullmatch(r"(?:да|ага|ок|окей|подтверждаю|согласен|согласна)[.!\s]*", latest):
+        quantities = re.findall(r"\b(?:добав\w*|полож\w*|беру|возьму|қос\w*|кос\w*)\s+(\d+)\b", without_article)
+    if not quantities and re.fullmatch(r"(?:да|ага|ок|окей|подтверждаю|согласен|согласна|иә|иа)[.!\s]*", latest):
         previous = next((m for m in reversed(messages[:-1]) if m.get("role") == "assistant"), None)
         if previous:
-            quantities = re.findall(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?)(?=\W|$)", str(previous.get("content") or "").casefold())
+            quantities = re.findall(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?|дана)(?=\W|$)", str(previous.get("content") or "").casefold())
     if len(set(quantities)) > 1 or qty != (int(quantities[0]) if quantities else 1):
         return False
     return True
@@ -218,17 +226,17 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
                     break
         if len(articles) != 1:
             return "Укажите один артикул товара и подтвердите добавление, например: «Добавь 2 шт DEMO-AV-16»."
-        quantity_match = re.search(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?)(?=\W|$)", lower)
-        if not quantity_match and re.fullmatch(r"(?:да|ага|ок|окей|подтверждаю|согласен|согласна)[.!\s]*", lower):
+        quantity_match = re.search(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?|дана)(?=\W|$)", lower)
+        if not quantity_match and re.fullmatch(r"(?:да|ага|ок|окей|подтверждаю|согласен|согласна|иә|иа)[.!\s]*", lower):
             previous = next((m for m in reversed(messages[:-1]) if m.get("role") == "assistant"), None)
             if previous:
-                quantity_match = re.search(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?)(?=\W|$)", str(previous.get("content") or "").casefold())
+                quantity_match = re.search(r"\b(\d+)\s*(?:штук(?:и|а)?|шт\.?|единиц(?:ы|а)?|дана)(?=\W|$)", str(previous.get("content") or "").casefold())
         qty = int(quantity_match.group(1)) if quantity_match else 1
         result = tools.dispatch("add_to_cart", {"article": articles[0], "qty": qty}, session_id, messages)
         if "error" in result:
             return f"Не удалось добавить товар: {result['error']}. Доступно: {result.get('available', 'неизвестно')}."
         return f"Добавлено в корзину: {articles[0]}, {qty} шт. Локальная корзина не синхронизируется с сайтом EKT. Ссылка: {CART_LINK}"
-    if "корзин" in lower:
+    if "корзин" in lower or "себет" in lower:
         cart = tools.dispatch("get_cart", {}, session_id, messages)["cart"]
         return ("В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста.") + f" Ссылка: {CART_LINK} (локальная корзина с сайтом не синхронизируется)."
     if any(word in lower for word in ("достав", "оплат", "услов", "покуп")):

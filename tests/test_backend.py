@@ -39,6 +39,19 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(purchase_confirmed([{"role": "assistant", "content": "Добавить DEMO-LED-12 в корзину?"}, {"role": "user", "content": "Да"}]))
         self.assertFalse(purchase_confirmed([{"role": "user", "content": "Не добавляй товар"}]))
 
+    def test_kazakh_confirmation_and_quantity(self):
+        direct = [{"role": "user", "content": "DEMO-AV-16 тауарынан 2 дана себетке қос"}]
+        self.assertTrue(purchase_confirmed(direct))
+        self.assertTrue(self.tools.add_to_cart("kz-direct", "DEMO-AV-16", 2, direct)["ok"])
+
+        offer = [
+            {"role": "assistant", "content": "2 дана Автоматический выключатель 1P 16 А себетке қосайын ба?"},
+            {"role": "user", "content": "Иә"},
+        ]
+        self.assertTrue(purchase_confirmed(offer))
+        self.assertTrue(self.tools.add_to_cart("kz-offer", "DEMO-AV-16", 2, offer)["ok"])
+        self.assertFalse(purchase_confirmed([{"role": "user", "content": "DEMO-AV-16 себетке қоспа"}]))
+
     def test_cart_uses_confirmed_article_and_quantity(self):
         request = [{"role": "user", "content": "Добавь 2 шт DEMO-LED-12"}]
         self.assertIn("error", self.tools.add_to_cart("one", "DEMO-LED-15", 2, request))
@@ -181,6 +194,14 @@ class BackendTests(unittest.TestCase):
                     self.assertEqual(answer.status_code, 200)
                     self.assertIn("недоступен", answer.json()["reply"])
                     self.assertEqual(answer.json()["cart"], [])
+
+    def test_demo_questions_endpoint_matches_logic_asset(self):
+        expected = [item["user"] for item in json.loads((Path(__file__).resolve().parents[1] / "logic" / "demo_questions.json").read_text(encoding="utf-8"))["script"]]
+        with patch.dict(os.environ, {"DEMO_MODE": "1", "OPENAI_API_KEY": ""}):
+            with TestClient(app) as client:
+                response = client.get("/api/demo-questions")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"questions": expected})
 
     def test_search_and_analogs(self):
         self.assertEqual(self.catalog.search("лампа")[0]["article"], "DEMO-LED-12")
