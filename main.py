@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from agent import CART_LINK, ShopTools, contains_payment_data, run_demo_agent, run_openai_agent
 from cart_state import CartStateCodec, InvalidCartToken
 from catalog import Catalog
+from ui_actions import ActionState, ChatAction, build_actions, demo_action_proposals
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class ChatResponse(BaseModel):
     cart_link: str | None
     cart_token: str | None = None
     assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system"
+    actions: list[ChatAction] = Field(default_factory=list)
 
 
 @asynccontextmanager
@@ -159,13 +161,23 @@ def chat(request: ChatRequest, http_request: Request):
             codec.restore(tools, request.cart_token, request.session_id)
         except InvalidCartToken as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cart_before = tools.get_cart(request.session_id)
+    action_state = ActionState()
 
     def response(reply: str, assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system") -> ChatResponse:
         cart = tools.get_cart(request.session_id)
         token = codec.encode(tools, request.session_id) if codec else None
         cart_link = str(http_request.url_for("demo_cart").include_query_params(token=token)) if token and cart else None
         clean_reply = reply.replace(CART_LINK, "кнопка «Открыть корзину ассистента»")
-        return ChatResponse(reply=clean_reply, cart=cart, cart_link=cart_link, cart_token=token, assistant_source=assistant_source)
+        actions: list[ChatAction] = []
+        if assistant_source in ("openai", "demo"):
+            proposals = (action_state.proposed if assistant_source == "openai" and action_state.called else
+                         demo_action_proposals(messages[-1]["content"], clean_reply, app.state.catalog, cart_before, cart))
+            observed = action_state.observed_articles if assistant_source == "openai" and action_state.called else None
+            actions = build_actions(proposals, clean_reply, messages[-1]["content"], app.state.catalog,
+                                    cart_before, cart, observed)
+        return ChatResponse(reply=clean_reply, cart=cart, cart_link=cart_link, cart_token=token,
+                            assistant_source=assistant_source, actions=actions)
 
     if messages[-1]["role"] != "user":
         return response("Последнее сообщение должно быть от клиента.")
@@ -182,7 +194,7 @@ def chat(request: ChatRequest, http_request: Request):
     api_key = os.getenv("OPENAI_API_KEY")
     try:
         if api_key:
-            reply = run_openai_agent(messages, request.session_id, tools, os.getenv("MODEL_NAME", "gpt-4.1-mini"), api_key)
+            reply = run_openai_agent(messages, request.session_id, tools, os.getenv("MODEL_NAME", "gpt-4.1-mini"), api_key, action_state)
             assistant_source = "openai"
         elif demo_mode:
             reply = run_demo_agent(messages, request.session_id, tools)

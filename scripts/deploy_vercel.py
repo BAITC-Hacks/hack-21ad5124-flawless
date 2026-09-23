@@ -25,6 +25,7 @@ FILES = [
     "app.py",
     "main.py",
     "agent.py",
+    "ui_actions.py",
     "catalog.py",
     "cart_state.py",
     "catalog_demo.json",

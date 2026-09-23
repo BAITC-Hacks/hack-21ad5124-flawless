@@ -8,6 +8,7 @@ import re
 from threading import RLock
 
 from catalog import BASE_DIR, Catalog, asset_path
+from ui_actions import ACTION_TYPES, ActionState
 
 CART_LINK = "https://ekt.kz/cart"
 
@@ -140,6 +141,46 @@ class ShopTools:
             self.processed_additions.add(addition_key)
         return {"ok": True, "article": product["article"], "qty": existing + qty, "cart": self.get_cart(session_id)}
 
+    def change_quantity(self, session_id: str, article: str, qty: int, messages: list[dict]):
+        product = self.catalog.get(article)
+        if not product or type(qty) is not int or qty < 1:
+            return {"error": "Некорректный товар или количество"}
+        escaped = re.escape(product["article"])
+        latest = str(messages[-1].get("content") or "") if messages and messages[-1].get("role") == "user" else ""
+        russian = rf"Измени количество {escaped} в корзине на {qty} шт"
+        kazakh = rf"Себеттегі {escaped} тауар санын {qty} данаға өзгерт"
+        if not (re.fullmatch(russian, latest, re.IGNORECASE) or re.fullmatch(kazakh, latest, re.IGNORECASE)):
+            return {"error": "Подтвердите конкретный товар и новое количество"}
+        stock = product["stock"]
+        if stock is None or qty > stock:
+            return {"error": "Недостаточно товара на складе", "available": stock}
+        with self.lock:
+            if product["article"] not in self.carts.get(session_id, {}):
+                return {"error": "Товара нет в корзине"}
+            self.carts[session_id][product["article"]] = qty
+        return {"ok": True, "article": product["article"], "qty": qty, "cart": self.get_cart(session_id)}
+
+    def remove_from_cart(self, session_id: str, article: str, messages: list[dict]):
+        product = self.catalog.get(article)
+        if not product:
+            return {"error": "Товар не найден"}
+        escaped = re.escape(product["article"])
+        latest = str(messages[-1].get("content") or "") if messages and messages[-1].get("role") == "user" else ""
+        if not (re.fullmatch(rf"Удали {escaped} из корзины", latest, re.IGNORECASE) or
+                re.fullmatch(rf"{escaped} тауарын себеттен алып таста", latest, re.IGNORECASE)):
+            return {"error": "Подтвердите удаление конкретного товара"}
+        with self.lock:
+            self.carts.get(session_id, {}).pop(product["article"], None)
+        return {"ok": True, "article": product["article"], "cart": self.get_cart(session_id)}
+
+    def clear_cart(self, session_id: str, messages: list[dict]):
+        latest = str(messages[-1].get("content") or "") if messages and messages[-1].get("role") == "user" else ""
+        if latest.casefold().strip() not in {"очисти корзину", "себетті тазала"}:
+            return {"error": "Подтвердите очистку корзины"}
+        with self.lock:
+            self.carts[session_id] = {}
+        return {"ok": True, "cart": []}
+
     def dispatch(self, name: str, args: dict, session_id: str, messages: list[dict]):
         try:
             if name == "search_products":
@@ -157,6 +198,12 @@ class ShopTools:
                     if not isinstance(phrase, str) or not phrase.strip() or phrase.casefold() not in str(messages[-1].get("content") or "").casefold():
                         return {"error": "Подтверждение должно дословно присутствовать в последнем сообщении клиента"}
                 return self.add_to_cart(session_id, str(args["article"]), args["qty"], messages)
+            if name == "change_quantity":
+                return self.change_quantity(session_id, str(args["article"]), args["qty"], messages)
+            if name == "remove_from_cart":
+                return self.remove_from_cart(session_id, str(args["article"]), messages)
+            if name == "clear_cart":
+                return self.clear_cart(session_id, messages)
             if name == "get_cart":
                 return {"cart": self.get_cart(session_id)}
         except (KeyError, TypeError, ValueError):
@@ -170,16 +217,30 @@ TOOLS = [
     {"type": "function", "function": {"name": "find_analogs", "description": "Найти имеющиеся в наличии товары той же категории.", "parameters": {"type": "object", "properties": {"article": {"type": "string"}}, "required": ["article"]}}},
     {"type": "function", "function": {"name": "get_purchase_conditions", "description": "Получить условия покупки и доставки.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "add_to_cart", "description": "Добавить товар в локальную корзину только после явного подтверждения клиента. session_id берётся с сервера.", "parameters": {"type": "object", "properties": {"article": {"type": "string"}, "qty": {"type": "integer", "minimum": 1}}, "required": ["article", "qty"]}}},
+    {"type": "function", "function": {"name": "change_quantity", "description": "Установить новое количество товара в корзине только по явной команде клиента.", "parameters": {"type": "object", "properties": {"article": {"type": "string"}, "qty": {"type": "integer", "minimum": 1}}, "required": ["article", "qty"]}}},
+    {"type": "function", "function": {"name": "remove_from_cart", "description": "Удалить конкретный товар из корзины только по явной команде клиента.", "parameters": {"type": "object", "properties": {"article": {"type": "string"}}, "required": ["article"]}}},
+    {"type": "function", "function": {"name": "clear_cart", "description": "Очистить корзину только по явной команде клиента.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "get_cart", "description": "Показать локальную корзину текущей сессии.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "set_ui_actions",
+        "description": "Выбрать только полезные следующие действия интерфейса после получения фактов из инструментов. Не изменяет корзину.",
+        "parameters": {"type": "object", "properties": {"actions": {"type": "array", "maxItems": 6, "items": {
+            "type": "object", "properties": {"type": {"type": "string", "enum": list(ACTION_TYPES)},
+                                            "article": {"type": "string"}, "qty": {"type": "integer", "minimum": 1}},
+            "required": ["type"], "additionalProperties": False}}},
+            "required": ["actions"], "additionalProperties": False},
+    }},
 ]
 
 
-def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, model: str, api_key: str) -> str:
+def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, model: str, api_key: str,
+                     action_state: ActionState | None = None) -> str:
     from openai import OpenAI
 
     system_prompt = asset_path("system_prompt.txt").read_text(encoding="utf-8")
     conversation = [{"role": "system", "content": system_prompt}, *messages]
     client = OpenAI(api_key=api_key, timeout=15.0, max_retries=0)
+    state = action_state if action_state is not None else ActionState()
     added_articles: set[str] = set()
     for _ in range(8):
         response = client.chat.completions.create(model=model, messages=conversation, tools=TOOLS)
@@ -191,10 +252,17 @@ def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, mo
         for call in calls:
             try:
                 args = json.loads(call.function.arguments)
-                if call.function.name == "add_to_cart" and str(args.get("article", "")).casefold() in added_articles:
+                if call.function.name == "set_ui_actions":
+                    state.called = True
+                    raw_actions = args.get("actions") if isinstance(args, dict) else None
+                    state.proposed = raw_actions[:30] if isinstance(raw_actions, list) else []
+                    result = {"ok": True, "recorded": len(state.proposed)}
+                elif call.function.name == "add_to_cart" and str(args.get("article", "")).casefold() in added_articles:
                     result = {"error": "Этот товар уже добавлен в текущем запросе"}
                 else:
                     result = tools.dispatch(call.function.name, args, session_id, messages)
+                    if isinstance(args, dict):
+                        state.observe(call.function.name, args, result)
                     if call.function.name == "add_to_cart" and isinstance(result, dict) and result.get("ok"):
                         added_articles.add(str(args["article"]).casefold())
             except (json.JSONDecodeError, AttributeError, TypeError):
@@ -210,6 +278,20 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
         return "Не отправляйте платёжные данные в чат. Оплата проходит только на сайте при оформлении заказа."
     lower = text.casefold()
     articles = [p["article"] for p in tools.catalog.products if p["article"].casefold() in lower]
+    if lower.startswith("измени количество ") or lower.startswith("себеттегі "):
+        quantity = re.search(r"\b(\d+)\s*(?:шт|данаға)", lower)
+        if len(articles) != 1 or not quantity:
+            return "Укажите товар и новое количество."
+        result = tools.dispatch("change_quantity", {"article": articles[0], "qty": int(quantity.group(1))}, session_id, messages)
+        return f"Количество {articles[0]} в корзине: {result['qty']} шт." if result.get("ok") else f"Не удалось изменить количество: {result['error']}."
+    if lower.startswith("удали ") or "себеттен алып таста" in lower:
+        if len(articles) != 1:
+            return "Укажите один товар для удаления."
+        result = tools.dispatch("remove_from_cart", {"article": articles[0]}, session_id, messages)
+        return f"{articles[0]} удалён из корзины." if result.get("ok") else f"Не удалось удалить товар: {result['error']}."
+    if lower in {"очисти корзину", "себетті тазала"}:
+        result = tools.dispatch("clear_cart", {}, session_id, messages)
+        return "Корзина очищена." if result.get("ok") else f"Не удалось очистить корзину: {result['error']}."
     if purchase_confirmed(messages):
         if not articles:
             for previous in reversed(messages[:-1]):
@@ -241,7 +323,37 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
         return "В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста."
     if any(word in lower for word in ("достав", "оплат", "услов", "покуп")):
         return tools.dispatch("get_purchase_conditions", {}, session_id, messages)
-    if "аналог" in lower:
+    if "менеджер" in lower or "менеджері" in lower:
+        return "Для сложного заказа свяжитесь с менеджером по телефону, указанному в шапке сайта."
+    if articles and any(word in lower for word in ("характерист", "сипаттама")):
+        product = tools.dispatch("get_product", {"article": articles[0]}, session_id, messages)
+        specs = product.get("characteristics") or {}
+        details = "; ".join(f"{key}: {value}" for key, value in specs.items()) if isinstance(specs, dict) else ""
+        return f"{product['name']} ({product['article']}): {details or 'характеристики не указаны'}."
+    if articles and any(word in lower for word in ("по складам", "наличие товара", "қоймалардағы")):
+        product = tools.dispatch("get_product", {"article": articles[0]}, session_id, messages)
+        stores = product.get("stores") or []
+        locations = "; ".join(f"{store.get('name', 'Склад')}: {store.get('quantity', 'неизвестно')} шт." for store in stores if isinstance(store, dict))
+        return f"{product['name']} ({product['article']}): остаток {product['stock'] if product['stock'] is not None else 'неизвестен'}. {locations or 'Данных по складам нет.'}"
+    if articles and ("сертификат" in lower or "сертификаттар" in lower):
+        product = tools.dispatch("get_product", {"article": articles[0]}, session_id, messages)
+        certificates = product.get("certificates") or []
+        return f"Сертификаты {product['article']}: " + ("; ".join(map(str, certificates)) if certificates else "в каталоге не указаны.")
+    if "сравн" in lower or "салыстыр" in lower:
+        compared = articles[:]
+        if len(compared) < 2:
+            for previous in reversed(messages[:-1]):
+                if previous.get("role") == "assistant":
+                    compared = [p["article"] for p in tools.catalog.products if p["article"].casefold() in str(previous.get("content") or "").casefold()]
+                    if len(compared) >= 2:
+                        break
+        if len(compared) >= 2:
+            return "Сравнение: " + "; ".join(
+                f"{product['name']} ({product['article']}): {product['price']} ₸, остаток {product['stock']}"
+                for product in (tools.catalog.get(article) for article in compared[:3]) if product
+            )
+        return "Назовите два артикула для сравнения."
+    if "аналог" in lower or "ұқсас" in lower:
         if not articles:
             for previous in reversed(messages[:-1]):
                 if previous.get("role") == "assistant":

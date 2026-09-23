@@ -56,9 +56,13 @@ def main() -> None:
         assert article.casefold() in product["reply"].casefold() and not product["cart"]
     if EXPECT_OPENAI:
         assert product["assistant_source"] == "openai", product["assistant_source"]
+    add_action = next(action for action in product["actions"] if action["type"] == "add_to_cart")
+    assert add_action["article"] == article and add_action["max_qty"] >= 2
+    if demo_mode:
+        assert not any(action["type"] == "add_to_cart" for action in analog["actions"])
     conditions = ask("Какие условия оплаты и доставки?")
     assert "достав" in conditions["reply"].lower() and not conditions["cart"]
-    added = ask(f"Да, добавь 2 шт {article} в корзину")
+    added = ask(add_action["message"].replace("{qty}", "2"))
     assert len(added["cart"]) == 1 and added["cart"][0]["qty"] == 2
     assert added["cart_link"].startswith(BASE + "/demo-cart?token=")
     assert "token=" not in added["reply"]

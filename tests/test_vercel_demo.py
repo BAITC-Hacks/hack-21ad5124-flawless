@@ -16,7 +16,7 @@ class StatelessDemoTests(unittest.TestCase):
                 "price": 100, "quantity": 3,
             })], "live")
 
-        def model_reply(messages, session_id, tools, model, api_key):
+        def model_reply(messages, session_id, tools, model, api_key, action_state):
             result = tools.add_to_cart(session_id, "EKT-TEST", 2, messages)
             self.assertTrue(result["ok"])
             return "Добавлено. Ссылка: https://ekt.kz/cart"
