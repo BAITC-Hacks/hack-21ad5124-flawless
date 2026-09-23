@@ -1195,7 +1195,7 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
     if "корзин" in lower or "себет" in lower:
         cart = tools.dispatch("get_cart", {}, session_id, messages)["cart"]
         summary = "В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста."
-        return f"{summary} Ссылка: {CART_LINK} (локальная корзина с сайтом не синхронизируется)."
+        return summary
     if any(word in lower for word in ("достав", "оплат", "услов", "покуп", "жеткіз", "төлем")):
         return tools.dispatch("get_purchase_conditions", {}, session_id, messages)
     if "менеджер" in lower or "менеджері" in lower:
@@ -1240,7 +1240,13 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
         if not articles:
             for previous in reversed(messages[:-1]):
                 if previous.get("role") == "assistant":
-                    found = [p["article"] for p in tools.catalog.products if p["article"].casefold() in str(previous.get("content") or "").casefold()]
+                    found = [
+                        product["article"]
+                        for product in _mentioned_products(
+                            str(previous.get("content") or "").casefold(),
+                            tools.catalog,
+                        )
+                    ]
                     if len(found) == 1:
                         articles = found
                         break

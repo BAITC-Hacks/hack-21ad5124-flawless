@@ -2,6 +2,15 @@ const SESSION_STORAGE_KEY = 'ekt-chat-session-id';
 const MAX_API_MESSAGES = 40;
 // Covers the bounded AI tool cycle plus lazy reads from the live EKT catalog.
 const CHAT_TIMEOUT_MS = 60_000;
+const DEMO_QUESTIONS_TIMEOUT_MS = 5_000;
+
+const CANONICAL_DEMO_QUESTIONS = Object.freeze([
+  'Есть автомат на 25 А?',
+  'DEMO-AV-25 нет в наличии? Какой аналог посоветуете?',
+  'Как у вас с оплатой и доставкой по Алматы? Есть минимальная партия?',
+  'Да, добавь 2 шт DEMO-AV-16 в корзину',
+  'Покажи корзину и дай ссылку'
+]);
 
 function createSessionId() {
   try {
@@ -29,6 +38,7 @@ const sessionId = getSessionId();
 const history = [];
 let waiting = false;
 let selectedPhotoUrl = null;
+let demoQuestions = [...CANONICAL_DEMO_QUESTIONS];
 
 const ALLOWED_ACTION_TYPES = new Set([
   'add_to_cart', 'show_analogs', 'show_details', 'show_availability',
@@ -81,6 +91,7 @@ const elements = {
   messages: document.querySelector('#messages'), cartCard: document.querySelector('#cart-card'), cartEmpty: document.querySelector('#cart-empty'),
   cartContent: document.querySelector('#cart-content'), cartItems: document.querySelector('#cart-items'), cartCount: document.querySelector('#cart-count'),
   cartTotal: document.querySelector('#cart-total'), cartLink: document.querySelector('#cart-link'), connection: document.querySelector('#connection-label'),
+  demoPanel: document.querySelector('#demo-panel'), demoQuestions: document.querySelector('#demo-questions'),
   categories: document.querySelector('#category-questions'), mobileCartButton: document.querySelector('#mobile-cart-button'),
   mobileCartCount: document.querySelector('#mobile-cart-count'), cartCloseButton: document.querySelector('#cart-close-button'),
   cartOverlay: document.querySelector('#cart-overlay'), photoInput: document.querySelector('#photo-input'),
@@ -409,6 +420,38 @@ elements.input.addEventListener('input', () => {
   elements.input.style.height = `${Math.min(elements.input.scrollHeight, 128)}px`;
 });
 
+function renderExampleQuestions() {
+  elements.demoQuestions.replaceChildren();
+  demoQuestions.forEach(question => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'shrink-0 rounded border border-sky-200 bg-white px-3 py-2 text-left text-xs font-medium text-ektDark transition hover:border-ekt hover:bg-sky-50';
+    button.textContent = question;
+    button.addEventListener('click', () => sendMessage(question));
+    elements.demoQuestions.append(button);
+  });
+}
+
+async function loadDemoQuestions() {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), DEMO_QUESTIONS_TIMEOUT_MS);
+  try {
+    const response = await fetch('/api/demo-questions', { signal: controller.signal });
+    if (!response.ok) throw new Error(`API ${response.status}`);
+    const data = await response.json();
+    if (!Array.isArray(data?.questions) || data.questions.length !== CANONICAL_DEMO_QUESTIONS.length || data.questions.some(question => typeof question !== 'string' || !question.trim())) {
+      throw new Error('Некорректный формат списка демо-вопросов');
+    }
+    demoQuestions = [...data.questions];
+    if (!elements.demoPanel.classList.contains('hidden')) renderExampleQuestions();
+  } catch (error) {
+    demoQuestions = [...CANONICAL_DEMO_QUESTIONS];
+    console.info('Используется канонический локальный список демо-вопросов:', error);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 function clearSelectedPhoto() {
   if (selectedPhotoUrl) URL.revokeObjectURL(selectedPhotoUrl);
   selectedPhotoUrl = null;
@@ -456,6 +499,15 @@ categoryQuestions.forEach(([label, question]) => {
   elements.categories.append(button);
 });
 
+function openExamples() {
+  renderExampleQuestions();
+  elements.demoPanel.classList.remove('hidden');
+}
+
+document.querySelector('#demo-button').addEventListener('click', openExamples);
+document.querySelector('#demo-button-mobile').addEventListener('click', openExamples);
+document.querySelector('#close-demo').addEventListener('click', () => elements.demoPanel.classList.add('hidden'));
+
 elements.mobileCartButton.addEventListener('click', () => setCartDrawer(true));
 elements.cartCloseButton.addEventListener('click', () => setCartDrawer(false));
 elements.cartOverlay.addEventListener('click', () => setCartDrawer(false));
@@ -474,3 +526,4 @@ window.addEventListener('resize', () => {
 elements.cartCard.setAttribute('aria-hidden', String(isMobileViewport()));
 addMessage('assistant', 'Здравствуйте! Я помогу найти электротехнический товар, проверить наличие и собрать корзину. Что вы ищете?');
 updateCart();
+loadDemoQuestions();

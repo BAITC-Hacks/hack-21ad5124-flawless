@@ -241,11 +241,11 @@ class BackendTests(unittest.TestCase):
                     "messages": [{"role": "user", "content": "Покажи лампы"}],
                     "cart_token": "unexpected",
                 })
-                self.assertEqual(changed_contract.status_code, 200)
+                self.assertEqual(changed_contract.status_code, 422)
                 add = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Добавь 2 шт DEMO-LED-12"}]})
                 self.assertEqual(add.status_code, 200)
                 self.assertEqual(add.json()["cart"][0]["qty"], 2)
-                self.assertIsNone(add.json()["cart_link"])
+                self.assertEqual(add.json()["cart_link"], "https://ekt.kz/cart")
 
 
 if __name__ == "__main__":

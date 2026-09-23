@@ -263,7 +263,8 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
             continue
 
         label, message = COPY[language][kind]
-        message = message.replace("{article}", article or "")
+        identity = product["article"] if product and language == "en" else product["name"] if product else ""
+        message = message.replace("{article}", identity)
         result.append(ChatAction(type=kind, label=label, message=message, article=article, qty=qty, max_qty=max_qty))
         seen_types.add(kind)
         if len(result) == MAX_ACTIONS:

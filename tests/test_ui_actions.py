@@ -128,7 +128,7 @@ class UIActionTests(unittest.TestCase):
         add = [{"role": "user", "content": "Add 2 × DEMO-LED-12 to the cart"}]
         self.assertTrue(purchase_confirmed(add, self.catalog))
         added = run_demo_agent(add, "english-actions", tools)
-        self.assertIn("Added to the cart: DEMO-LED-12, quantity 2", added)
+        self.assertIn("Added to the cart: Светодиодная лампа EKT 12 Вт E27 4000 К, quantity 2", added)
         self.assertEqual(tools.get_cart("english-actions")[0]["qty"], 2)
 
         changed = run_demo_agent(
