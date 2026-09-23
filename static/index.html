@@ -19,6 +19,10 @@
     .typing-dot { animation: pulse 1.15s infinite ease-in-out; }
     .typing-dot:nth-child(2) { animation-delay: .16s; }
     .typing-dot:nth-child(3) { animation-delay: .32s; }
+    .chat-action { transition: width .22s ease, background-color .2s ease, border-color .2s ease, transform .2s ease; }
+    .chat-action:active { transform: scale(.97); }
+    #cart-card { transition: transform .3s cubic-bezier(.22,.8,.3,1), box-shadow .3s ease; }
+    #cart-overlay { transition: opacity .25s ease; }
     @keyframes pulse { 0%,70%,100% { opacity:.25; transform:translateY(0) } 35% { opacity:1; transform:translateY(-2px) } }
     @media (prefers-reduced-motion: reduce) { *, #messages { animation:none!important; scroll-behavior:auto!important; } }
   </style>
@@ -92,7 +96,7 @@
         </div>
       </section>
 
-      <aside id="cart-card" class="hidden h-fit overflow-hidden rounded border border-slate-200 bg-white shadow-panel lg:block" aria-labelledby="cart-title">
+      <aside id="cart-card" class="fixed inset-y-0 right-0 z-50 h-[100dvh] w-[min(88vw,390px)] translate-x-full overflow-y-auto border-l border-slate-200 bg-white shadow-2xl lg:static lg:z-auto lg:h-fit lg:w-auto lg:translate-x-0 lg:overflow-hidden lg:rounded lg:border lg:shadow-panel" aria-labelledby="cart-title" aria-hidden="true">
         <div class="border-b border-slate-200 bg-ekt px-5 py-4 text-white">
           <div class="flex items-center justify-between">
             <div><p class="text-xs font-bold uppercase tracking-wider text-white/70">Ваш заказ</p><h2 id="cart-title" class="mt-1 text-xl font-bold">Корзина</h2></div>
@@ -110,12 +114,23 @@
           <div id="cart-items" class="divide-y divide-slate-100 px-5"></div>
           <div class="border-t border-slate-200 p-5">
             <div class="mb-4 flex items-center justify-between"><span class="text-sm text-slate-500">Итого</span><strong id="cart-total" class="text-xl text-ektDark">0 ₸</strong></div>
-            <a id="cart-link" href="https://ekt.kz/cart" target="_blank" rel="noopener noreferrer" class="block rounded bg-accent px-4 py-3 text-center font-bold text-ektDark transition hover:bg-yellow-400">Перейти в корзину</a>
+            <a id="cart-link" href="#" target="_blank" rel="noopener noreferrer" class="hidden block rounded bg-accent px-4 py-3 text-center font-bold text-ektDark transition hover:bg-yellow-400">Перейти в корзину EKT</a>
+            <p class="mt-3 text-xs leading-relaxed text-slate-500">Панель ассистента пока не синхронизирована с корзиной сайта ekt.kz.</p>
           </div>
         </div>
       </aside>
+      <button id="cart-close-button" type="button" style="transform: translate(100vw, -50%)" class="pointer-events-none fixed right-[min(88vw,390px)] top-1/2 z-50 grid h-12 w-12 place-items-center rounded-l-lg bg-ektDark text-white opacity-0 shadow-lg transition duration-300 lg:hidden" aria-label="Вернуться к чату">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 18-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
     </div>
   </main>
+
+  <button id="mobile-cart-button" type="button" class="fixed right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-center gap-1 rounded-l-xl bg-ektDark px-3 py-4 text-white shadow-xl transition hover:bg-ekt lg:hidden" aria-label="Открыть корзину" aria-expanded="false">
+    <svg width="25" height="25" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 4h2l2.2 10.2a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 2-1.6L20.5 8H6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="20" r="1" fill="currentColor"/><circle cx="18" cy="20" r="1" fill="currentColor"/></svg>
+    <span class="text-[10px] font-bold uppercase tracking-wider [writing-mode:vertical-rl]">Корзина</span>
+    <span id="mobile-cart-count" class="grid h-6 min-w-6 place-items-center rounded-full bg-accent px-1 text-xs font-bold text-ektDark">0</span>
+  </button>
+  <button id="cart-overlay" type="button" class="pointer-events-none fixed inset-0 z-40 bg-slate-950/40 opacity-0 lg:hidden" aria-label="Закрыть корзину" tabindex="-1"></button>
 
   <footer class="mt-4 bg-ekt text-white">
     <div class="mx-auto flex max-w-[1320px] flex-col justify-between gap-3 px-6 py-6 text-sm sm:flex-row sm:items-center">

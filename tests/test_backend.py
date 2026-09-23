@@ -177,7 +177,7 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(ShopTools(catalog).get_purchase_conditions(), "Условия из logic")
                 self.assertEqual(asset_path("system_prompt.txt"), logic / "system_prompt.txt")
                 live = Catalog(demo_mode=False)
-                self.assertEqual(ShopTools(live).get_purchase_conditions(), "Уточните условия у менеджера")
+                self.assertEqual(ShopTools(live).get_purchase_conditions(), "Условия из logic")
 
     def test_unknown_stock_stays_unknown(self):
         product = normalize_product({"article": "X", "name": "Товар", "stores": [{"quantity": "unknown"}], "price": "NaN"})
@@ -232,7 +232,14 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(client.get("/health").json()["catalog_source"], "demo")
                 search = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Покажи лампы"}]})
                 self.assertEqual(search.status_code, 200)
+                self.assertEqual(set(search.json()), {"reply", "cart", "cart_link"})
                 self.assertEqual(search.json()["cart"], [])
+                changed_contract = client.post("/api/chat", json={
+                    "session_id": "demo",
+                    "messages": [{"role": "user", "content": "Покажи лампы"}],
+                    "cart_token": "unexpected",
+                })
+                self.assertEqual(changed_contract.status_code, 422)
                 add = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Добавь 2 шт DEMO-LED-12"}]})
                 self.assertEqual(add.status_code, 200)
                 self.assertEqual(add.json()["cart"][0]["qty"], 2)

@@ -1,10 +1,12 @@
 import os
 import time
 import unittest
-from threading import Lock
+from threading import Event, Lock
 from unittest.mock import patch
 
-from catalog import API_URL, DETAIL_API_URL, Catalog, normalize_product
+import requests
+
+from catalog import API_URL, CATALOG_PAGE_WORKERS, DETAIL_API_URL, Catalog, normalize_product
 
 
 class FakeResponse:
@@ -166,6 +168,72 @@ class LiveCatalogTests(unittest.TestCase):
         self.assertEqual(requested_pages, [1, 2])
         self.assertEqual(len(catalog.products), 4)
         self.assertEqual(catalog.source, "live")
+
+    def test_known_pages_load_concurrently_but_products_keep_page_order(self):
+        active = 0
+        max_active = 0
+        activity_lock = Lock()
+        overlap = Event()
+
+        def handler(url, params):
+            nonlocal active, max_active
+            page = params["page"]
+            if page == 1:
+                return FakeResponse({"page": 1, "per_page": 1, "count": 7, "items": [summary(1)]})
+            with activity_lock:
+                active += 1
+                max_active = max(max_active, active)
+                if active >= 2:
+                    overlap.set()
+            self.assertTrue(overlap.wait(1), "remaining pages were not fetched concurrently")
+            with activity_lock:
+                active -= 1
+            return FakeResponse({"page": page, "per_page": 1, "count": 7, "items": [summary(page)]})
+
+        factory = SessionFactory(handler)
+        with self.live_env(CATALOG_PER_PAGE="1"), patch(
+            "catalog.requests.Session", side_effect=factory
+        ):
+            catalog = Catalog()
+            catalog.load()
+
+        self.assertEqual(catalog.source, "live")
+        self.assertEqual([product["article"] for product in catalog.products], [f"A-{page}" for page in range(1, 8)])
+        self.assertEqual(sorted(call[1]["page"] for call in factory.calls), list(range(1, 8)))
+        self.assertGreaterEqual(max_active, 2)
+        self.assertLessEqual(max_active, CATALOG_PAGE_WORKERS)
+        self.assertTrue(all(session.closed for session in factory.sessions))
+
+    def test_parallel_page_failure_discards_partial_catalog_and_retries(self):
+        def handler(url, params):
+            page = params["page"]
+            if page == 3:
+                raise requests.Timeout("offline test timeout")
+            return FakeResponse({"page": page, "per_page": 1, "count": 4, "items": [summary(page)]})
+
+        factory = SessionFactory(handler)
+        with self.live_env(CATALOG_PER_PAGE="1"), patch(
+            "catalog.requests.Session", side_effect=factory
+        ):
+            catalog = Catalog()
+            catalog.load()
+
+        requested_pages = [call[1]["page"] for call in factory.calls]
+        self.assertEqual(requested_pages.count(3), 2, "failed pages must keep the bounded retry policy")
+        self.assertEqual(catalog.source, "unavailable")
+        self.assertEqual(catalog.products, [])
+        self.assertTrue(all(session.closed for session in factory.sessions))
+
+    def test_live_mode_requires_both_organizer_credentials(self):
+        with patch.dict(os.environ, {"DEMO_MODE": "0", "EKT_API_PASSWORD": "only-password"}, clear=True), patch(
+            "catalog.requests.Session"
+        ) as session_factory:
+            catalog = Catalog()
+            catalog.load()
+
+        session_factory.assert_not_called()
+        self.assertEqual(catalog.source, "unavailable")
+        self.assertEqual(catalog.products, [])
 
     def test_search_and_get_load_details_lazily_cache_them_and_never_exceed_six_workers(self):
         summaries = [summary(index, article=f"A{index}", name=f"Cable product {index}") for index in range(9)]

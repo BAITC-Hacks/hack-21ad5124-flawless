@@ -160,8 +160,40 @@ def health():
 
 @app.get("/api/demo-questions")
 def demo_questions():
-    questions = load_demo_questions() if app.state.catalog.demo_mode else LIVE_EXAMPLE_QUESTIONS
-    return {"questions": questions}
+    if app.state.catalog.demo_mode:
+        return {"questions": load_demo_questions()}
+
+    products = app.state.catalog.products
+    available = next(
+        (
+            product
+            for product in products
+            if product["stock"] is not None
+            and product["stock"] >= 2
+            and product["price"] is not None
+            and product["price"] > 0
+        ),
+        None,
+    )
+    unavailable = next((product for product in products if product["stock"] == 0), None)
+    if not available:
+        return {"questions": LIVE_EXAMPLE_QUESTIONS}
+
+    article = available["article"]
+    analog_question = (
+        f"Подберите аналог для {unavailable['article']}"
+        if unavailable
+        else f"Какие похожие товары есть для {article}?"
+    )
+    return {
+        "questions": [
+            f"Какие характеристики и наличие у товара {article}?",
+            analog_question,
+            "Какие условия оплаты и доставки?",
+            f"Да, добавь 2 шт {article} в корзину",
+            "Покажи корзину",
+        ]
+    }
 
 
 def _request_hash(request: ChatRequest) -> str:
@@ -207,14 +239,33 @@ def _session_turn_lock(session_id: str) -> RLock:
     return app.state.turn_locks[index]
 
 
-def _finish_turn(session_id: str, request_hash: str, messages: list[dict], reply: str, tools: ShopTools) -> ChatResponse:
+def _response(
+    session_id: str,
+    reply: str,
+    tools: ShopTools,
+) -> ChatResponse:
     reply = str(reply or "").strip() or "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
     if len(reply) > MAX_MODEL_REPLY_CHARS:
         reply = reply[: MAX_MODEL_REPLY_CHARS - 1].rstrip() + "…"
-    response = ChatResponse(reply=reply, cart=tools.get_cart(session_id), cart_link=CART_LINK)
+
+    return ChatResponse(
+        reply=reply,
+        cart=tools.get_cart(session_id),
+        cart_link=CART_LINK,
+    )
+
+
+def _finish_turn(
+    session_id: str,
+    request_hash: str,
+    messages: list[dict],
+    reply: str,
+    tools: ShopTools,
+) -> ChatResponse:
+    response = _response(session_id, reply, tools)
     with app.state.history_lock:
         app.state.histories[session_id] = _bounded_history(
-            [*messages, {"role": "assistant", "content": reply}],
+            [*messages, {"role": "assistant", "content": response.reply}],
             max_messages=40,
         )
         app.state.last_responses[session_id] = (request_hash, response.model_copy(deep=True))
@@ -225,17 +276,20 @@ def _finish_turn(session_id: str, request_hash: str, messages: list[dict], reply
     return response
 
 
-def _chat_unlocked(request: ChatRequest):
+def _chat_unlocked(request: ChatRequest) -> ChatResponse:
     tools: ShopTools = app.state.tools
     incoming = [message.model_dump() for message in request.messages]
     if incoming[-1]["role"] != "user":
-        return ChatResponse(reply="Последнее сообщение должно быть от клиента.", cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
+        return _response(
+            request.session_id,
+            "Последнее сообщение должно быть от клиента.",
+            tools,
+        )
 
     request_hash = _request_hash(request)
     cached = _cached_response(request.session_id, request_hash)
     if cached is not None:
         return cached
-
     latest_user = incoming[-1]
     payment_data = contains_payment_data(latest_user["content"])
     if payment_data:
@@ -252,7 +306,13 @@ def _chat_unlocked(request: ChatRequest):
         )
 
     if app.state.catalog.source == "unavailable":
-        return _finish_turn(request.session_id, request_hash, messages, "Каталог EKT временно недоступен. Проверьте товары и цены позже.", tools)
+        return _finish_turn(
+            request.session_id,
+            request_hash,
+            messages,
+            "Каталог EKT временно недоступен. Проверьте товары и цены позже.",
+            tools,
+        )
 
     demo_mode = app.state.catalog.demo_mode
     api_key = os.getenv("OPENAI_API_KEY")
@@ -265,8 +325,17 @@ def _chat_unlocked(request: ChatRequest):
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
     except Exception:
         LOG.exception("Chat agent failed")
-        reply = run_demo_agent(messages, request.session_id, tools) if demo_mode else "ИИ-сервис временно недоступен. Попробуйте позже."
-    return _finish_turn(request.session_id, request_hash, messages, reply, tools)
+        if demo_mode:
+            reply = run_demo_agent(messages, request.session_id, tools)
+        else:
+            reply = "ИИ-сервис временно недоступен. Попробуйте позже."
+    return _finish_turn(
+        request.session_id,
+        request_hash,
+        messages,
+        reply,
+        tools,
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)

@@ -504,7 +504,8 @@ class ShopTools:
         return [product_brief(p) for p in self.catalog.analogs(article)]
 
     def get_purchase_conditions(self):
-        path = asset_path("purchase_conditions.txt") if self.catalog.demo_mode else BASE_DIR / "purchase_conditions.txt"
+        # The logic-owned policy is the single source of truth in both catalog modes.
+        path = asset_path("purchase_conditions.txt")
         return path.read_text(encoding="utf-8") if path.exists() else "Условия покупки уточняйте у менеджера EKT."
 
     def get_cart(self, session_id: str):
@@ -746,6 +747,34 @@ def run_openai_agent(messages: list[dict], session_id: str, tools: ShopTools, mo
     return safe_reply(user_text, "tools")
 
 
+_DEMO_SEARCH_STOPWORDS = {
+    "а", "в", "вы", "для", "есть", "и", "или", "какая", "какие", "какой", "ли", "мне", "на",
+    "найди", "найдите", "нужен", "нужна", "нужно", "нужны", "по", "пожалуйста", "покажи", "покажите",
+    "расскажи", "расскажите", "сколько", "стоит", "товар", "товары", "у", "хочу", "цена",
+}
+_DEMO_SEARCH_ALIASES = {
+    "автомата": "автомат", "автоматы": "автомат", "автоматов": "автомат",
+    "кабели": "кабель", "кабеля": "кабель", "кабелей": "кабель",
+    "лампы": "лампа", "лампу": "лампа", "ламп": "лампа",
+    "розетки": "розетка", "розетку": "розетка", "розеток": "розетка",
+    "светильники": "светильник", "светильника": "светильник", "светильников": "светильник",
+    "выключатели": "выключатель", "выключателя": "выключатель", "выключателей": "выключатель",
+    "инструменты": "инструмент", "щиты": "щит", "щитов": "щит",
+}
+
+
+def _demo_search_query(text: str) -> str:
+    """Remove conversational filler while retaining brands, ratings and dimensions."""
+    tokens = re.findall(r"[0-9A-Za-zА-Яа-яЁёӘәҒғҚқҢңӨөҰұҮүҺһІі]+(?:[.,xх×][0-9A-Za-zА-Яа-яЁё]+)*", text)
+    useful: list[str] = []
+    for token in tokens:
+        folded = token.casefold()
+        if folded in _DEMO_SEARCH_STOPWORDS:
+            continue
+        useful.append(_DEMO_SEARCH_ALIASES.get(folded, token))
+    return " ".join(useful[:12])
+
+
 def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> str:
     """Offline tool-using fallback for common demo questions."""
     text = str(messages[-1]["content"]).strip()
@@ -767,7 +796,8 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
         return f"Добавлено в корзину: {target['article']}, {qty} шт. Локальная корзина не синхронизируется с сайтом EKT. Ссылка: {CART_LINK}"
     if "корзин" in lower or "себет" in lower:
         cart = tools.dispatch("get_cart", {}, session_id, messages)["cart"]
-        return ("В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста.") + f" Ссылка: {CART_LINK} (локальная корзина с сайтом не синхронизируется)."
+        summary = "В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста."
+        return f"{summary} Ссылка: {CART_LINK} (локальная корзина с сайтом не синхронизируется)."
     if any(word in lower for word in ("достав", "оплат", "услов", "покуп")):
         return tools.dispatch("get_purchase_conditions", {}, session_id, messages)
     if "аналог" in lower:
@@ -789,16 +819,17 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
         if "error" not in p:
             stock = p["stock"] if p["stock"] is not None else "неизвестен"
             return f"{p['name']} ({p['article']}): {p['price']} ₸, остаток: {stock}. " + ("Могу подобрать аналог." if p["stock"] == 0 else "Добавление недоступно до уточнения остатка." if p["stock"] is None else "Добавить в корзину?")
-    query = next((word for word in ("лампа", "светодиод", "автомат", "выключатель") if word in lower), "")
-    if query:
-        brand = next((brand for brand in ("abb", "schneider", "iek", "siemens") if brand in lower), "")
-        rating = re.search(r"\b\d+\s*[аa]\b", lower)
-        query = " ".join(part for part in (query, brand, rating.group() if rating else "") if part)
+    query = _demo_search_query(text)
     results = tools.dispatch("search_products", {"query": query}, session_id, messages) if query else []
+    if not isinstance(results, list):
+        results = []
     if results:
         if len(results) == 1:
             p = results[0]
             stock = p["stock"] if p["stock"] is not None else "неизвестен"
             return f"{p['name']} ({p['article']}): {p['price']} ₸, остаток: {stock}. " + ("Могу подобрать аналог." if p["stock"] == 0 else "Добавление недоступно до уточнения остатка." if p["stock"] is None else "Добавить в корзину?")
         return "Нашёл товары: " + "; ".join(f"{p['name']} ({p['article']}), {p['price']} ₸, остаток {p['stock']}" for p in results) + ". Назовите артикул для подробностей."
-    return "Могу найти лампу или автоматический выключатель, показать аналоги, условия покупки и корзину. Назовите товар или артикул."
+    requested_article = re.search(r"\b[A-Z0-9]+(?:-[A-Z0-9]+)+\b", text, re.IGNORECASE)
+    if requested_article:
+        return f"Товар {requested_article.group(0)} в каталоге не найден. Проверьте артикул или уточните название."
+    return "По запросу товары в каталоге не найдены. Уточните название, бренд или характеристику."

@@ -18,6 +18,6 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: EKT_API_USER
-        value: apiuser
+        sync: false
       - key: EKT_API_PASSWORD
         sync: false

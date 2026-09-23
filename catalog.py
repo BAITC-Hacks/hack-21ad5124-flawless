@@ -22,6 +22,7 @@ DETAIL_API_URL = f"{API_URL}/detail"
 DEFAULT_CATALOG_PER_PAGE = 1000
 MAX_CATALOG_PER_PAGE = 1000
 MAX_CATALOG_PAGES = 100
+CATALOG_PAGE_WORKERS = 6
 DETAIL_WORKERS = 6
 MAX_SEARCH_DETAIL_CANDIDATES = 24
 MAX_ANALOG_DETAIL_CANDIDATES = 24
@@ -211,10 +212,10 @@ class Catalog:
         LOG.info("Loaded %s products from %s", len(self.products), effective_source)
 
     def _session(self):
-        username = os.getenv("EKT_API_USER", "apiuser")
+        username = (os.getenv("EKT_API_USER") or "").strip()
         password = os.getenv("EKT_API_PASSWORD")
-        if not password:
-            raise ValueError("EKT_API_PASSWORD is not configured")
+        if not username or not password:
+            raise ValueError("EKT_API_USER and EKT_API_PASSWORD must be configured")
         session = requests.Session()
         session.auth = (username, password)
         session.headers["Accept"] = "application/json"
@@ -234,6 +235,83 @@ class Catalog:
                     LOG.warning("Retrying EKT API request after %s", type(exc).__name__)
         raise last_error
 
+    @staticmethod
+    def _catalog_items(payload) -> list:
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected EKT catalog response")
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            raise ValueError("Unexpected EKT catalog response")
+        return items
+
+    @staticmethod
+    def _known_catalog_pages(payload: dict, item_count: int, per_page: int, page_limit: int) -> int | None:
+        """Return a bounded page count when the first response exposes pagination."""
+        for key in ("total_pages", "pages", "last_page"):
+            try:
+                reported_pages = int(payload.get(key))
+            except (TypeError, ValueError):
+                continue
+            if reported_pages > 0:
+                return min(reported_pages, page_limit)
+
+        try:
+            total_count = int(payload.get("count"))
+        except (TypeError, ValueError):
+            total_count = None
+        if total_count is not None and total_count >= 0:
+            try:
+                response_page_size = int(payload.get("per_page"))
+            except (TypeError, ValueError):
+                # The endpoint may silently cap a requested page size. In that
+                # case the first non-empty page is the only safe divisor.
+                response_page_size = item_count or per_page
+            if response_page_size <= 0:
+                response_page_size = item_count or per_page
+            elif 0 < item_count < response_page_size and total_count > item_count:
+                response_page_size = item_count
+            return min(max(1, math.ceil(total_count / response_page_size)), page_limit)
+
+        try:
+            response_page_size = int(payload.get("per_page", per_page))
+        except (TypeError, ValueError):
+            response_page_size = per_page
+        if response_page_size > 0 and item_count < response_page_size:
+            return 1
+        return None
+
+    def _load_catalog_pages_parallel(self, page_numbers: list[int], per_page: int) -> list[tuple[int, dict]]:
+        """Fetch known catalog pages concurrently, with one Session per worker."""
+        if not page_numbers:
+            return []
+        worker_count = min(CATALOG_PAGE_WORKERS, len(page_numbers))
+        chunks = [page_numbers[index::worker_count] for index in range(worker_count)]
+
+        def load_chunk(chunk: list[int]) -> list[tuple[int, dict]]:
+            session = self._session()
+            try:
+                return [
+                    (
+                        page,
+                        self._request_json(
+                            session,
+                            API_URL,
+                            params={"page": page, "per_page": per_page},
+                            timeout=CATALOG_REQUEST_TIMEOUT,
+                        ),
+                    )
+                    for page in chunk
+                ]
+            finally:
+                session.close()
+
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            chunk_results = list(pool.map(load_chunk, chunks))
+        return sorted(
+            (result for chunk_result in chunk_results for result in chunk_result),
+            key=lambda result: result[0],
+        )
+
     def _load_live(self):
         session = self._session()
         per_page = _env_int("CATALOG_PER_PAGE", DEFAULT_CATALOG_PER_PAGE)
@@ -246,66 +324,105 @@ class Catalog:
         seen_fingerprints: set[tuple[tuple[str, str, str], ...]] = set()
         seen_reported_pages: set[int] = set()
         received_items = 0
+
+        def accept_page(payload: dict) -> bool:
+            nonlocal received_items
+            items = self._catalog_items(payload)
+            if not items:
+                return False
+
+            reported_page = payload.get("page")
+            if isinstance(reported_page, int):
+                if reported_page in seen_reported_pages:
+                    LOG.warning("Stopping EKT pagination after repeated page %s", reported_page)
+                    return False
+                seen_reported_pages.add(reported_page)
+            fingerprint = tuple(
+                (
+                    str(item.get("id") or ""),
+                    str(item.get("article") or ""),
+                    str(item.get("name") or ""),
+                )
+                if isinstance(item, dict)
+                else ("", "", repr(item))
+                for item in items
+            )
+            if fingerprint in seen_fingerprints:
+                LOG.warning("Stopping EKT pagination after duplicate page content")
+                return False
+            seen_fingerprints.add(fingerprint)
+
+            for item in items:
+                normalized = normalize_product(item)
+                if (
+                    normalized["id"] is not None
+                    and str(normalized["id"]).strip()
+                    and normalized["article"]
+                    and normalized["name"]
+                ):
+                    products.append(normalized)
+            received_items += len(items)
+            try:
+                response_page_size = int(payload.get("per_page", per_page))
+            except (TypeError, ValueError):
+                response_page_size = per_page
+            if response_page_size <= 0:
+                response_page_size = per_page
+            if len(items) < response_page_size:
+                try:
+                    total_count = int(payload.get("count"))
+                except (TypeError, ValueError):
+                    total_count = None
+                if total_count is None or received_items >= total_count:
+                    return False
+            return True
+
         try:
-            for page in range(1, pages + 1):
+            first_payload = self._request_json(
+                session,
+                API_URL,
+                params={"page": 1, "per_page": per_page},
+                timeout=CATALOG_REQUEST_TIMEOUT,
+            )
+            first_items = self._catalog_items(first_payload)
+            known_pages = self._known_catalog_pages(first_payload, len(first_items), per_page, pages)
+            if not accept_page(first_payload) or pages == 1:
+                return products
+
+            if known_pages is not None:
+                remaining_pages = list(range(2, known_pages + 1))
+                if len(remaining_pages) == 1:
+                    page = remaining_pages[0]
+                    page_payloads = [
+                        (
+                            page,
+                            self._request_json(
+                                session,
+                                API_URL,
+                                params={"page": page, "per_page": per_page},
+                                timeout=CATALOG_REQUEST_TIMEOUT,
+                            ),
+                        )
+                    ]
+                elif remaining_pages:
+                    page_payloads = self._load_catalog_pages_parallel(remaining_pages, per_page)
+                else:
+                    page_payloads = []
+                for _page, payload in page_payloads:
+                    if not accept_page(payload):
+                        break
+                return products
+
+            # Compatibility fallback for responses without a usable total.
+            for page in range(2, pages + 1):
                 payload = self._request_json(
                     session,
                     API_URL,
                     params={"page": page, "per_page": per_page},
                     timeout=CATALOG_REQUEST_TIMEOUT,
                 )
-                if not isinstance(payload, dict):
-                    raise ValueError("Unexpected EKT catalog response")
-                items = payload.get("items", [])
-                if not isinstance(items, list):
-                    raise ValueError("Unexpected EKT catalog response")
-                if not items:
+                if not accept_page(payload):
                     break
-
-                reported_page = payload.get("page")
-                if isinstance(reported_page, int):
-                    if reported_page in seen_reported_pages:
-                        LOG.warning("Stopping EKT pagination after repeated page %s", reported_page)
-                        break
-                    seen_reported_pages.add(reported_page)
-                fingerprint = tuple(
-                    (
-                        str(item.get("id") or ""),
-                        str(item.get("article") or ""),
-                        str(item.get("name") or ""),
-                    )
-                    if isinstance(item, dict)
-                    else ("", "", repr(item))
-                    for item in items
-                )
-                if fingerprint in seen_fingerprints:
-                    LOG.warning("Stopping EKT pagination after duplicate page content")
-                    break
-                seen_fingerprints.add(fingerprint)
-
-                for item in items:
-                    normalized = normalize_product(item)
-                    if (
-                        normalized["id"] is not None
-                        and str(normalized["id"]).strip()
-                        and normalized["article"]
-                        and normalized["name"]
-                    ):
-                        products.append(normalized)
-                received_items += len(items)
-                try:
-                    response_page_size = int(payload.get("per_page", per_page))
-                except (TypeError, ValueError):
-                    response_page_size = per_page
-                if response_page_size <= 0:
-                    response_page_size = per_page
-                if len(items) < response_page_size:
-                    try:
-                        total_count = int(payload.get("count"))
-                    except (TypeError, ValueError):
-                        total_count = None
-                    if total_count is None or received_items >= total_count:
-                        break
         finally:
             session.close()
 

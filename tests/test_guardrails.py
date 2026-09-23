@@ -8,9 +8,9 @@ SYSTEM_PROMPT = "Факты о товарах подтверждай инстр�
 
 
 class GuardrailUnitTests(unittest.TestCase):
-    def test_live_purchase_conditions_amounts_are_allowed_when_grounded(self):
-        conditions = (Path(__file__).resolve().parents[1] / "purchase_conditions.txt").read_text(encoding="utf-8")
-        reply = "По Алматы заказ свыше 15 000 ₸ доставляется бесплатно."
+    def test_logic_purchase_conditions_amounts_are_allowed_when_grounded(self):
+        conditions = (Path(__file__).resolve().parents[1] / "logic" / "purchase_conditions.txt").read_text(encoding="utf-8")
+        reply = "По Алматы заказ от 50 000 ₸ доставляется бесплатно."
         traces = [{"name": "get_purchase_conditions", "args": {}, "result": conditions}]
         self.assertEqual(
             guard_model_reply(reply, "Какова стоимость доставки по Алматы?", traces, SYSTEM_PROMPT),
@@ -101,7 +101,7 @@ class GuardrailUnitTests(unittest.TestCase):
         )
 
     def test_purchase_conditions_cannot_ground_a_product_price(self):
-        conditions = (Path(__file__).resolve().parents[1] / "purchase_conditions.txt").read_text(encoding="utf-8")
+        conditions = (Path(__file__).resolve().parents[1] / "logic" / "purchase_conditions.txt").read_text(encoding="utf-8")
         traces = [{"name": "get_purchase_conditions", "args": {}, "result": conditions}]
         user = "Сколько стоит товар ITEM-9?"
         self.assertEqual(
