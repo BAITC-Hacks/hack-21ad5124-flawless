@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import RLock
@@ -15,6 +17,14 @@ import requests
 LOG = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 API_URL = "https://ekt.kz/api/products"
+
+
+def asset_path(name: str) -> Path:
+    """Use the logic team's assets once that branch is merged."""
+    logic_file = BASE_DIR / "logic" / name
+    return logic_file if logic_file.is_file() else BASE_DIR / name
+
+
 CATEGORY_NAMES = {
     "kabel_provod": "Кабель / Провод",
     "svetilniki_lampy": "Светильники / Лампы",
@@ -30,7 +40,8 @@ def _number(value):
     if value is None or value == "":
         return None
     try:
-        return float(str(value).replace(" ", "").replace(",", "."))
+        number = float(str(value).replace(" ", "").replace(",", "."))
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -46,16 +57,21 @@ def normalize_product(raw: dict) -> dict:
     parts = urlparse(url).path.strip("/").split("/")
     category_slug = parts[1] if len(parts) > 1 and parts[0] == "catalog" else ""
     category = raw.get("category") or CATEGORY_NAMES.get(category_slug, category_slug.replace("_", " "))
-    properties = raw.get("properties") or raw.get("characteristics") or {}
+    properties = raw.get("properties") or raw.get("characteristics") or raw.get("specs") or {}
     certificates = raw.get("certificates") or []
     if not certificates and isinstance(properties, dict):
         certificates = [value for key, value in properties.items() if "CERT" in key.upper() and value]
     if not isinstance(certificates, list):
         certificates = [certificates]
-    stock = _stock(raw.get("stock", raw.get("quantity")))
+    raw_stock = raw.get("stock", raw.get("quantity"))
+    stock = _stock(raw_stock)
     stores = raw.get("stores") or []
+    if isinstance(raw_stock, dict):
+        stores = [{"name": name, "quantity": quantity} for name, quantity in raw_stock.items()]
     if stock is None and stores:
-        stock = sum(_stock(store.get("quantity")) or 0 for store in stores if isinstance(store, dict))
+        quantities = [_stock(store.get("quantity")) for store in stores if isinstance(store, dict)]
+        if quantities and all(quantity is not None for quantity in quantities):
+            stock = sum(quantities)
     return {
         "id": raw.get("id"),
         "article": str(raw.get("article") or raw.get("sku") or "").strip(),
@@ -87,9 +103,11 @@ class Catalog:
                 if products:
                     self._set_products(products, "live")
                     return
-                LOG.warning("EKT API returned no products; loading demo catalog")
+                LOG.warning("EKT API returned no products")
             except (requests.RequestException, ValueError, KeyError) as exc:
-                LOG.warning("EKT API unavailable; loading demo catalog: %s", exc)
+                LOG.warning("EKT API unavailable: %s", exc)
+            self._set_products([], "unavailable")
+            return
         path = BASE_DIR / "catalog_demo.json"
         with path.open(encoding="utf-8") as handle:
             raw = json.load(handle)
@@ -152,11 +170,16 @@ class Catalog:
             return [future.result() for future in futures]
 
     def search(self, query: str, limit: int = 8) -> list[dict]:
-        words = query.casefold().split()
+        words = re.sub(r"(\d)\s+(?=[а-яa-z])", r"\1", query.casefold()).split()
         if not words:
             return []
         with self.lock:
-            matches = [p for p in self.products if all(word in f"{p['article']} {p['name']} {p['category']}".casefold() for word in words)]
+            matches = []
+            for product in self.products:
+                details = " ".join(f"{key} {value}" for key, value in product["characteristics"].items()) if isinstance(product["characteristics"], dict) else ""
+                searchable = re.sub(r"(\d)\s+(?=[а-яa-z])", r"\1", f"{product['article']} {product['name']} {product['category']} {details}".casefold())
+                if all(word in searchable for word in words):
+                    matches.append(product)
         matches.sort(key=lambda p: (p["availability"] != "in_stock", p["article"].casefold()))
         return matches[:limit]
 
@@ -169,4 +192,9 @@ class Catalog:
         if not original:
             return []
         with self.lock:
-            return [p for p in self.products if p["article"] != original["article"] and p["category"] == original["category"] and p["availability"] == "in_stock"][:limit]
+            matches = [p for p in self.products if p["article"] != original["article"] and p["category"] == original["category"] and p["availability"] == "in_stock"]
+        def similarity(product):
+            original_specs = {str(key).casefold(): str(value).casefold() for key, value in original["characteristics"].items()}
+            product_specs = {str(key).casefold(): str(value).casefold() for key, value in product["characteristics"].items()}
+            return sum(product_specs.get(key) == value for key, value in original_specs.items())
+        return sorted(matches, key=lambda p: (-similarity(p), p["article"].casefold()))[:limit]

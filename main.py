@@ -11,10 +11,11 @@ from typing import Literal
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from agent import CART_LINK, ShopTools, run_demo_agent, run_openai_agent
+from agent import CART_LINK, ShopTools, contains_payment_data, run_demo_agent, run_openai_agent
 from catalog import Catalog
 
 logging.basicConfig(level=logging.INFO)
@@ -67,7 +68,9 @@ def index():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "catalog_source": app.state.catalog.source, "products": len(app.state.catalog.products)}
+    catalog = app.state.catalog
+    status = {"ok": catalog.source != "unavailable", "catalog_source": catalog.source, "products": len(catalog.products)}
+    return JSONResponse(status, status_code=200 if status["ok"] else 503)
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -76,6 +79,14 @@ def chat(request: ChatRequest):
     tools: ShopTools = app.state.tools
     if messages[-1]["role"] != "user":
         return ChatResponse(reply="Последнее сообщение должно быть от клиента.", cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
+
+    if contains_payment_data(messages[-1]["content"]):
+        return ChatResponse(reply="Не отправляйте платёжные данные в чат. Оплата проходит только на сайте при оформлении заказа.", cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
+
+    messages = [{**message, "content": "[Платёжные данные удалены]" if contains_payment_data(message["content"]) else message["content"]} for message in messages]
+
+    if app.state.catalog.source == "unavailable":
+        return ChatResponse(reply="Каталог EKT временно недоступен. Проверьте товары и цены позже.", cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
 
     demo_mode = os.getenv("DEMO_MODE", "0") == "1"
     api_key = os.getenv("OPENAI_API_KEY")
