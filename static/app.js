@@ -38,6 +38,7 @@ const sessionId = getSessionId();
 const history = [];
 let waiting = false;
 let selectedPhotoUrl = null;
+let selectedPhotoFile = null;
 let demoQuestions = [...CANONICAL_DEMO_QUESTIONS];
 
 const ALLOWED_ACTION_TYPES = new Set([
@@ -318,7 +319,7 @@ function getApiMessages() {
   return messages;
 }
 
-async function askAssistant() {
+async function askAssistant(attachments = []) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
   try {
@@ -328,7 +329,8 @@ async function askAssistant() {
       signal: controller.signal,
       body: JSON.stringify({
         session_id: sessionId,
-        messages: getApiMessages()
+        messages: getApiMessages(),
+        attachments
       })
     });
     if (!response.ok) {
@@ -363,9 +365,33 @@ function getRequestErrorMessage(error) {
   return 'Не удалось связаться с сервисом. Проверьте подключение и повторите отправку.';
 }
 
+function fileToAttachment(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('file read failed'));
+    reader.onload = () => {
+      const encoded = String(reader.result || '');
+      const separator = encoded.indexOf(',');
+      if (separator < 0) return reject(new Error('invalid data URL'));
+      resolve({ name: file.name, mime: file.type || 'application/octet-stream', data_base64: encoded.slice(separator + 1) });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 async function sendMessage(content) {
   const question = content.trim();
   if (!question || waiting) return;
+
+  let attachments = [];
+  if (selectedPhotoFile) {
+    try {
+      attachments = [await fileToAttachment(selectedPhotoFile)];
+    } catch (error) {
+      addMessage('status', 'Не удалось прочитать выбранное фото.', { alert: true });
+      return;
+    }
+  }
 
   waiting = true;
   elements.send.disabled = true;
@@ -375,12 +401,18 @@ async function sendMessage(content) {
   showTyping();
 
   try {
-    const data = await askAssistant();
+    const data = await askAssistant(attachments);
     removeTyping();
     history.push({ role: 'assistant', content: data.reply });
     const assistantRow = addMessage('assistant', data.reply);
     renderActions(assistantRow, data.actions, data.reply);
     updateCart(data.cart, data.cart_link);
+    if (Array.isArray(data.attachments)) {
+      data.attachments.filter(item => item?.status === 'error').forEach(item => {
+        addMessage('status', `${item.name}: ${item.note || 'не удалось обработать'}`, { alert: true });
+      });
+    }
+    if (attachments.length) clearSelectedPhoto();
   } catch (error) {
     removeTyping();
     // Keep a failed turn out of API context. A manual retry then sends the same
@@ -455,6 +487,7 @@ async function loadDemoQuestions() {
 function clearSelectedPhoto() {
   if (selectedPhotoUrl) URL.revokeObjectURL(selectedPhotoUrl);
   selectedPhotoUrl = null;
+  selectedPhotoFile = null;
   elements.photoInput.value = '';
   elements.imagePreview.removeAttribute('src');
   elements.imageName.textContent = '';
@@ -471,13 +504,14 @@ elements.photoInput.addEventListener('change', () => {
     addMessage('status', 'Выберите файл изображения.', { alert: true });
     return;
   }
-  if (file.size > 10 * 1024 * 1024) {
+  if (file.size > 3 * 1024 * 1024) {
     clearSelectedPhoto();
-    addMessage('status', 'Фото должно быть меньше 10 МБ.', { alert: true });
+    addMessage('status', 'Фото должно быть не больше 3 МБ.', { alert: true });
     return;
   }
   if (selectedPhotoUrl) URL.revokeObjectURL(selectedPhotoUrl);
   selectedPhotoUrl = URL.createObjectURL(file);
+  selectedPhotoFile = file;
   elements.imagePreview.src = selectedPhotoUrl;
   elements.imageName.textContent = file.name;
   elements.photoStatus.textContent = 'Фото выбрано';
@@ -487,7 +521,8 @@ elements.photoInput.addEventListener('change', () => {
 
 elements.removePhoto.addEventListener('click', clearSelectedPhoto);
 elements.findByPhoto.addEventListener('click', () => {
-  elements.photoStatus.textContent = 'Фото готово. Анализ изображения будет подключён к backend.';
+  elements.input.value = elements.input.value.trim() || 'Найди товар по фото';
+  elements.form.requestSubmit();
 });
 
 categoryQuestions.forEach(([label, question]) => {
