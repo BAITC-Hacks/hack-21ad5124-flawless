@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EKT · ИИ-консультант</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 0; background: #f4f6f8; color: #172338; }
+    main { max-width: 720px; margin: 5vh auto; padding: 24px; background: white; border-radius: 16px; box-shadow: 0 6px 30px #142a4414; }
+    h1 { margin-top: 0; font-size: 1.5rem; }
+    #messages { min-height: 300px; max-height: 55vh; overflow: auto; }
+    .message { margin: 12px 0; padding: 12px 16px; border-radius: 12px; white-space: pre-wrap; background: #edf2f7; }
+    .user { background: #dceeff; margin-left: 12%; }
+    form { display: flex; gap: 8px; margin-top: 16px; }
+    input { flex: 1; padding: 12px; border: 1px solid #bccad8; border-radius: 8px; font: inherit; }
+    button { border: 0; border-radius: 8px; padding: 12px 18px; background: #0966b7; color: white; font: inherit; cursor: pointer; }
+    #cart { margin-top: 12px; font-size: .9rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Консультант EKT</h1>
+  <div id="messages" aria-live="polite"></div>
+  <form id="chat-form"><input id="question" autocomplete="off" placeholder="Например: покажи лампы" required><button>Отправить</button></form>
+  <div id="cart">Корзина пуста.</div>
+</main>
+<script>
+  const sessionId = sessionStorage.getItem('ekt-session') || crypto.randomUUID();
+  sessionStorage.setItem('ekt-session', sessionId);
+  const history = [];
+  const messages = document.getElementById('messages');
+  function bubble(role, content) {
+    const node = document.createElement('div');
+    node.className = 'message ' + role;
+    node.textContent = content;
+    messages.append(node);
+    messages.scrollTop = messages.scrollHeight;
+  }
+  document.getElementById('chat-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const input = document.getElementById('question');
+    const content = input.value.trim();
+    if (!content) return;
+    input.value = '';
+    history.push({role: 'user', content});
+    bubble('user', content);
+    try {
+      const response = await fetch('/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session_id: sessionId, messages: history})});
+      if (!response.ok) throw new Error('Сервер вернул ошибку');
+      const data = await response.json();
+      history.push({role: 'assistant', content: data.reply});
+      bubble('assistant', data.reply);
+      const cart = data.cart.map(item => `${item.name} × ${item.qty}`).join('; ');
+      document.getElementById('cart').textContent = cart ? `Локальная корзина: ${cart}` : 'Корзина пуста.';
+    } catch {
+      history.pop();
+      bubble('assistant', 'Не удалось связаться с сервером. Попробуйте ещё раз.');
+    }
+  });
+</script>
+</body>
+</html>
