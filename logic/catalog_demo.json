@@ -1,0 +1,135 @@
+{
+  "_note": "СИНТЕТИЧЕСКИЙ каталог для DEMO_MODE. Цены и остатки выдуманы, к реальному ekt.kz отношения не имеют.",
+  "products": [
+    {
+      "article": "515291",
+      "name": "Автоматический выключатель ABB S201 C16 1P 6кА",
+      "category": "Автоматические выключатели",
+      "specs": { "Номинальный ток": "16 А", "Характеристика": "C", "Полюсов": "1", "Отключающая способность": "6 кА", "Бренд": "ABB" },
+      "certificates": ["https://ekt.kz/demo/certs/abb-s201-ct-kz.pdf"],
+      "price": 3500,
+      "stock": { "Алматы": 0, "Астана": 0 },
+      "availability": "нет в наличии"
+    },
+    {
+      "article": "515292",
+      "name": "Автоматический выключатель Schneider Electric Easy9 C16 1P 4,5кА",
+      "category": "Автоматические выключатели",
+      "specs": { "Номинальный ток": "16 А", "Характеристика": "C", "Полюсов": "1", "Отключающая способность": "4,5 кА", "Бренд": "Schneider Electric" },
+      "certificates": ["https://ekt.kz/demo/certs/se-easy9-ct-kz.pdf"],
+      "price": 2900,
+      "stock": { "Алматы": 40, "Астана": 12 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "515293",
+      "name": "Автоматический выключатель IEK ВА47-60 C16 1P 6кА",
+      "category": "Автоматические выключатели",
+      "specs": { "Номинальный ток": "16 А", "Характеристика": "C", "Полюсов": "1", "Отключающая способность": "6 кА", "Бренд": "IEK" },
+      "certificates": ["https://ekt.kz/demo/certs/iek-va47-60-ct-kz.pdf"],
+      "price": 1900,
+      "stock": { "Алматы": 5, "Астана": 0 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "515294",
+      "name": "Автоматический выключатель ABB S201 C25 1P 6кА",
+      "category": "Автоматические выключатели",
+      "specs": { "Номинальный ток": "25 А", "Характеристика": "C", "Полюсов": "1", "Отключающая способность": "6 кА", "Бренд": "ABB" },
+      "certificates": ["https://ekt.kz/demo/certs/abb-s201-ct-kz.pdf"],
+      "price": 3700,
+      "stock": { "Алматы": 18, "Астана": 6 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "520110",
+      "name": "УЗО ABB F202 AC-40/0,03 2P 40А 30мА",
+      "category": "УЗО",
+      "specs": { "Номинальный ток": "40 А", "Ток утечки": "30 мА", "Тип": "AC", "Полюсов": "2", "Бренд": "ABB" },
+      "certificates": ["https://ekt.kz/demo/certs/abb-f202-ct-kz.pdf"],
+      "price": 18900,
+      "stock": { "Алматы": 7, "Астана": 3 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "520111",
+      "name": "УЗО IEK ВД1-63 2P 25А 30мА",
+      "category": "УЗО",
+      "specs": { "Номинальный ток": "25 А", "Ток утечки": "30 мА", "Тип": "AC", "Полюсов": "2", "Бренд": "IEK" },
+      "certificates": ["https://ekt.kz/demo/certs/iek-vd1-63-ct-kz.pdf"],
+      "price": 7400,
+      "stock": { "Алматы": 0, "Астана": 0 },
+      "availability": "нет в наличии"
+    },
+    {
+      "article": "520112",
+      "name": "УЗО Schneider Electric Easy9 2P 25А 30мА AC",
+      "category": "УЗО",
+      "specs": { "Номинальный ток": "25 А", "Ток утечки": "30 мА", "Тип": "AC", "Полюсов": "2", "Бренд": "Schneider Electric" },
+      "certificates": ["https://ekt.kz/demo/certs/se-easy9-rcd-ct-kz.pdf"],
+      "price": 9800,
+      "stock": { "Алматы": 9, "Астана": 4 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "530201",
+      "name": "Кабель ВВГнг-LS 3x2,5 (бухта 100 м)",
+      "category": "Кабель и провод",
+      "specs": { "Сечение": "3x2,5 мм²", "Материал жилы": "медь", "Исполнение": "нг-LS", "Длина бухты": "100 м" },
+      "certificates": ["https://ekt.kz/demo/certs/vvgng-ls-ct-kz.pdf"],
+      "price": 48000,
+      "stock": { "Алматы": 25, "Астана": 10 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "530202",
+      "name": "Кабель ВВГнг-LS 3x1,5 (бухта 100 м)",
+      "category": "Кабель и провод",
+      "specs": { "Сечение": "3x1,5 мм²", "Материал жилы": "медь", "Исполнение": "нг-LS", "Длина бухты": "100 м" },
+      "certificates": ["https://ekt.kz/demo/certs/vvgng-ls-ct-kz.pdf"],
+      "price": 31500,
+      "stock": { "Алматы": 30, "Астана": 14 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "540301",
+      "name": "Розетка Schneider Electric Glossa с заземлением, белая",
+      "category": "Розетки и выключатели",
+      "specs": { "Тип": "с заземлением", "Номинальный ток": "16 А", "Цвет": "белый", "Монтаж": "скрытый" },
+      "certificates": ["https://ekt.kz/demo/certs/se-glossa-ct-kz.pdf"],
+      "price": 1450,
+      "stock": { "Алматы": 120, "Астана": 60 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "540302",
+      "name": "Выключатель одноклавишный Schneider Electric Glossa, белый",
+      "category": "Розетки и выключатели",
+      "specs": { "Клавиш": "1", "Номинальный ток": "10 А", "Цвет": "белый", "Монтаж": "скрытый" },
+      "certificates": ["https://ekt.kz/demo/certs/se-glossa-ct-kz.pdf"],
+      "price": 1250,
+      "stock": { "Алматы": 80, "Астана": 0 },
+      "availability": "в наличии"
+    },
+    {
+      "article": "550401",
+      "name": "Светильник светодиодный панель 36 Вт 4000К 595x595",
+      "category": "Светильники",
+      "specs": { "Мощность": "36 Вт", "Цветовая температура": "4000 К", "Размер": "595x595 мм", "IP": "20" },
+      "certificates": ["https://ekt.kz/demo/certs/led-panel-36-ct-kz.pdf"],
+      "price": 6900,
+      "stock": { "Алматы": 0, "Астана": 0 },
+      "availability": "нет в наличии"
+    },
+    {
+      "article": "550402",
+      "name": "Светильник светодиодный панель 40 Вт 4000К 595x595",
+      "category": "Светильники",
+      "specs": { "Мощность": "40 Вт", "Цветовая температура": "4000 К", "Размер": "595x595 мм", "IP": "20" },
+      "certificates": ["https://ekt.kz/demo/certs/led-panel-40-ct-kz.pdf"],
+      "price": 7600,
+      "stock": { "Алматы": 35, "Астана": 20 },
+      "availability": "в наличии"
+    }
+  ]
+}
