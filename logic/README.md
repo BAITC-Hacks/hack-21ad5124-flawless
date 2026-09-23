@@ -4,7 +4,7 @@
 |---|---|---|
 | `system_prompt.txt` | бэк | system-сообщение для LLM |
 | `purchase_conditions.txt` | бэк | ответ `get_purchase_conditions()` (демо-текст) |
-| `tools.json` | бэк | описания 6 инструментов; источник правды — `TOOLS` в `agent.py`, отсюда можно взять формулировки |
+| `tools.json` | бэк | исходные описания базовых инструментов; актуальный источник правды — `TOOLS` в `agent.py` |
 | `demo_questions.json` | фронт | сценарий для кнопки «Пример диалога» + негативные проверки |
 | `TEAM_PLAN.md` | все | план работы команды |
 
@@ -24,5 +24,8 @@
 // запрос
 { "session_id": "abc", "messages": [ {"role":"user","content":"есть автомат на 25 А?"} ] }
 // ответ
-{ "reply": "...", "cart": [ {"article":"DEMO-AV-16","name":"...","qty":2,"price":2150} ], "cart_link": "https://ekt.kz/cart" }
+{ "reply": "...", "cart": [ {"article":"DEMO-AV-16","name":"...","qty":2,"price":2150} ], "cart_link": "https://ekt.kz/cart", "actions": [] }
 ```
+
+`actions` — дополнительное обратноссовместимое поле с проверенными быстрыми действиями; базовые поля
+`reply`, `cart`, `cart_link` сохраняются.

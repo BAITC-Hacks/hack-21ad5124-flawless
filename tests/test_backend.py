@@ -232,7 +232,7 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(client.get("/health").json()["catalog_source"], "demo")
                 search = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Покажи лампы"}]})
                 self.assertEqual(search.status_code, 200)
-                self.assertEqual(set(search.json()), {"reply", "cart", "cart_link"})
+                self.assertEqual(set(search.json()), {"reply", "cart", "cart_link", "actions"})
                 self.assertEqual(search.json()["cart"], [])
                 changed_contract = client.post("/api/chat", json={
                     "session_id": "demo",
