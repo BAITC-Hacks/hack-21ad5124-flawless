@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from agent import ShopTools, purchase_confirmed, run_demo_agent, run_openai_agent
 from catalog import Catalog, asset_path, normalize_product
+from guardrails import safe_reply
 from main import app
 
 
@@ -72,7 +73,7 @@ class BackendTests(unittest.TestCase):
         second = self.tools.add_to_cart("one", "DEMO-LED-12", 2, request)
         self.assertEqual(first["qty"], 2)
         self.assertEqual(second["qty"], 2)
-        self.assertNotIn("cart_link", second)
+        self.assertEqual(second["cart_link"], "https://ekt.kz/cart")
         self.assertEqual(self.tools.get_cart("one")[0]["qty"], 2)
 
     def test_tool_confirmation_must_match_latest_user_message(self):
@@ -117,8 +118,7 @@ class BackendTests(unittest.TestCase):
         self.assertIn("515292", messages[3]["content"])
         self.assertIn("условия покупки", messages[5]["content"].casefold())
         self.assertEqual(tools.get_cart("one")[0]["qty"], 2)
-        self.assertIn("корзин", messages[-1]["content"].casefold())
-        self.assertNotIn("https://ekt.kz/cart", messages[-1]["content"])
+        self.assertIn("https://ekt.kz/cart", messages[-1]["content"])
 
     def test_current_team_demo_script(self):
         messages = []
@@ -134,8 +134,7 @@ class BackendTests(unittest.TestCase):
         self.assertIn("DEMO-AV-25", messages[1]["content"])
         self.assertIn("DEMO-AV-16", messages[3]["content"])
         self.assertEqual(self.tools.get_cart("team")[0]["qty"], 2)
-        self.assertIn("корзин", messages[-1]["content"].casefold())
-        self.assertNotIn("https://ekt.kz/cart", messages[-1]["content"])
+        self.assertIn("https://ekt.kz/cart", messages[-1]["content"])
 
     def test_payment_data_is_stopped_before_model(self):
         with patch.dict(os.environ, {"DEMO_MODE": "1", "OPENAI_API_KEY": "test-key"}):
@@ -160,7 +159,8 @@ class BackendTests(unittest.TestCase):
                         {"role": "user", "content": "Покажи лампы"},
                     ]})
                     self.assertEqual(answer.status_code, 200)
-        self.assertEqual(observed[0]["content"], "[Платёжные данные удалены]")
+        self.assertEqual(observed, [{"role": "user", "content": "Покажи лампы"}])
+        self.assertNotIn("4400", json.dumps(observed, ensure_ascii=False))
 
     def test_merged_logic_assets_are_used_directly(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -177,7 +177,7 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(ShopTools(catalog).get_purchase_conditions(), "Условия из logic")
                 self.assertEqual(asset_path("system_prompt.txt"), logic / "system_prompt.txt")
                 live = Catalog(demo_mode=False)
-                self.assertEqual(ShopTools(live).get_purchase_conditions(), "Уточните условия у менеджера")
+                self.assertEqual(ShopTools(live).get_purchase_conditions(), "Условия из logic")
 
     def test_unknown_stock_stays_unknown(self):
         product = normalize_product({"article": "X", "name": "Товар", "stores": [{"quantity": "unknown"}], "price": "NaN"})
@@ -221,7 +221,7 @@ class BackendTests(unittest.TestCase):
         fake = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: next(responses))))
         with patch("openai.OpenAI", return_value=fake):
             answer = run_openai_agent([{"role": "user", "content": "Покажи DEMO-LED-12"}], "one", self.tools, "test-model", "test-key")
-        self.assertEqual(answer, "Готово")
+        self.assertEqual(answer, safe_reply("Покажи DEMO-LED-12", "facts"))
         self.assertEqual(self.tools.get_cart("one"), [])
         self.assertEqual(self.tools.get_cart("other"), [])
 
@@ -232,11 +232,18 @@ class BackendTests(unittest.TestCase):
                 self.assertEqual(client.get("/health").json()["catalog_source"], "demo")
                 search = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Покажи лампы"}]})
                 self.assertEqual(search.status_code, 200)
+                self.assertEqual(set(search.json()), {"reply", "cart", "cart_link"})
                 self.assertEqual(search.json()["cart"], [])
+                changed_contract = client.post("/api/chat", json={
+                    "session_id": "demo",
+                    "messages": [{"role": "user", "content": "Покажи лампы"}],
+                    "cart_token": "unexpected",
+                })
+                self.assertEqual(changed_contract.status_code, 422)
                 add = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Добавь 2 шт DEMO-LED-12"}]})
                 self.assertEqual(add.status_code, 200)
                 self.assertEqual(add.json()["cart"][0]["qty"], 2)
-                self.assertIsNone(add.json()["cart_link"])
+                self.assertEqual(add.json()["cart_link"], "https://ekt.kz/cart")
 
 
 if __name__ == "__main__":

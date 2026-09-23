@@ -1,5 +1,4 @@
 const SESSION_STORAGE_KEY = 'ekt-chat-session-id';
-const CART_TOKEN_STORAGE_KEY = 'ekt-cart-token';
 const MAX_API_MESSAGES = 40;
 const CHAT_TIMEOUT_MS = 25_000;
 const DEMO_QUESTIONS_TIMEOUT_MS = 5_000;
@@ -35,12 +34,6 @@ function getSessionId() {
 }
 
 const sessionId = getSessionId();
-let cartToken = null;
-try {
-  cartToken = window.sessionStorage.getItem(CART_TOKEN_STORAGE_KEY);
-} catch (error) {
-  console.info('sessionStorage недоступен для корзины:', error);
-}
 const history = [];
 let waiting = false;
 let demoQuestions = [...CANONICAL_DEMO_QUESTIONS];
@@ -258,8 +251,9 @@ function updateCart(cart = [], cartLink = null) {
   const quantity = items.reduce((sum, item) => sum + normalizeQuantity(item.qty), 0);
   elements.cartCount.textContent = quantity;
   elements.mobileCartCount.textContent = quantity;
-  if (cartLink) elements.cartLink.href = cartLink;
-  elements.cartLink.classList.toggle('hidden', !cartLink);
+  const canOpenCart = Boolean(cartLink && items.length > 0);
+  if (canOpenCart) elements.cartLink.href = cartLink;
+  elements.cartLink.classList.toggle('hidden', !canOpenCart);
   elements.cartEmpty.classList.toggle('hidden', items.length > 0);
   elements.cartContent.classList.toggle('hidden', items.length === 0);
   elements.cartItems.replaceChildren();
@@ -313,20 +307,10 @@ async function askAssistant() {
       signal: controller.signal,
       body: JSON.stringify({
         session_id: sessionId,
-        messages: getApiMessages(),
-        cart_token: cartToken
+        messages: getApiMessages()
       })
     });
     if (!response.ok) {
-      if (response.status === 400 && cartToken) {
-        cartToken = null;
-        try { window.sessionStorage.removeItem(CART_TOKEN_STORAGE_KEY); } catch (error) {
-          console.info('Не удалось удалить устаревшее состояние корзины:', error);
-        }
-        const error = new Error('Состояние корзины недействительно');
-        error.kind = 'cart-expired';
-        throw error;
-      }
       const error = new Error(`API ${response.status}`);
       error.kind = 'http';
       error.status = response.status;
@@ -338,16 +322,7 @@ async function askAssistant() {
       error.kind = 'invalid-response';
       throw error;
     }
-    if (typeof data.cart_token === 'string') {
-      cartToken = data.cart_token;
-      try {
-        window.sessionStorage.setItem(CART_TOKEN_STORAGE_KEY, cartToken);
-      } catch (error) {
-        console.info('Не удалось сохранить состояние корзины в sessionStorage:', error);
-      }
-    }
-    elements.connection.textContent = data.assistant_source === 'openai' ? 'ИИ на связи'
-      : data.assistant_source === 'demo' ? 'Демо-режим' : 'На связи';
+    elements.connection.textContent = 'На связи';
     return data;
   } finally {
     window.clearTimeout(timeoutId);
@@ -355,9 +330,6 @@ async function askAssistant() {
 }
 
 function getRequestErrorMessage(error) {
-  if (error?.kind === 'cart-expired') {
-    return 'Корзина из предыдущей версии каталога больше недействительна. Начните новый диалог и добавьте товары снова.';
-  }
   if (error?.name === 'AbortError') {
     return 'Сервис не ответил вовремя. Проверьте соединение и повторите отправку.';
   }
@@ -390,10 +362,6 @@ async function sendMessage(content) {
     updateCart(data.cart, data.cart_link);
   } catch (error) {
     removeTyping();
-    if (error?.kind === 'cart-expired') {
-      history.length = 0;
-      updateCart([], null);
-    }
     // Keep a failed turn out of API context. A manual retry then sends the same
     // request hash, so a response lost after a cart mutation cannot add twice.
     const failedTurn = history[history.length - 1];
