@@ -242,6 +242,15 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
             continue
         elif kind == "payment" and ("оплат" in reply_lower or "төлем" in reply_lower):
             continue
+        elif kind == "clarify":
+            # A generic clarification button only repeats the assistant's question.
+            continue
+        elif kind == "continue_search" and not re.search(
+                r"не найден|не наш[её]л|нет в каталоге|табылма|каталогта жоқ", reply_lower):
+            continue
+        elif kind == "contact_manager" and not re.search(
+                r"менеджер|не могу подтвердить|уточнить у специалиста", reply_lower):
+            continue
         elif kind == "contact_manager" and re.search(r"\+\d[\d\s()\-]{7,}|@[\w.-]+", reply):
             continue
         elif kind == "change_quantity":
@@ -254,7 +263,8 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
             continue
 
         label, message = COPY[language][kind]
-        message = message.replace("{article}", article or "")
+        identity = product["article"] if product and language == "en" else product["name"] if product else ""
+        message = message.replace("{article}", identity)
         result.append(ChatAction(type=kind, label=label, message=message, article=article, qty=qty, max_qty=max_qty))
         seen_types.add(kind)
         if len(result) == MAX_ACTIONS:

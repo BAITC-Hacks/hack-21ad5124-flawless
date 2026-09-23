@@ -37,6 +37,8 @@ function getSessionId() {
 const sessionId = getSessionId();
 const history = [];
 let waiting = false;
+let selectedPhotoUrl = null;
+let selectedPhotoFile = null;
 let demoQuestions = [...CANONICAL_DEMO_QUESTIONS];
 
 const ALLOWED_ACTION_TYPES = new Set([
@@ -93,7 +95,10 @@ const elements = {
   demoPanel: document.querySelector('#demo-panel'), demoQuestions: document.querySelector('#demo-questions'),
   categories: document.querySelector('#category-questions'), mobileCartButton: document.querySelector('#mobile-cart-button'),
   mobileCartCount: document.querySelector('#mobile-cart-count'), cartCloseButton: document.querySelector('#cart-close-button'),
-  cartOverlay: document.querySelector('#cart-overlay')
+  cartOverlay: document.querySelector('#cart-overlay'), photoInput: document.querySelector('#photo-input'),
+  imageAttachment: document.querySelector('#image-attachment'), imagePreview: document.querySelector('#image-preview'),
+  imageName: document.querySelector('#image-name'), photoStatus: document.querySelector('#photo-status'),
+  findByPhoto: document.querySelector('#find-by-photo'), removePhoto: document.querySelector('#remove-photo')
 };
 
 function normalizePrice(value) {
@@ -314,7 +319,7 @@ function getApiMessages() {
   return messages;
 }
 
-async function askAssistant() {
+async function askAssistant(attachments = []) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
   try {
@@ -324,7 +329,8 @@ async function askAssistant() {
       signal: controller.signal,
       body: JSON.stringify({
         session_id: sessionId,
-        messages: getApiMessages()
+        messages: getApiMessages(),
+        attachments
       })
     });
     if (!response.ok) {
@@ -359,9 +365,33 @@ function getRequestErrorMessage(error) {
   return 'Не удалось связаться с сервисом. Проверьте подключение и повторите отправку.';
 }
 
+function fileToAttachment(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('file read failed'));
+    reader.onload = () => {
+      const encoded = String(reader.result || '');
+      const separator = encoded.indexOf(',');
+      if (separator < 0) return reject(new Error('invalid data URL'));
+      resolve({ name: file.name, mime: file.type || 'application/octet-stream', data_base64: encoded.slice(separator + 1) });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 async function sendMessage(content) {
   const question = content.trim();
   if (!question || waiting) return;
+
+  let attachments = [];
+  if (selectedPhotoFile) {
+    try {
+      attachments = [await fileToAttachment(selectedPhotoFile)];
+    } catch (error) {
+      addMessage('status', 'Не удалось прочитать выбранное фото.', { alert: true });
+      return;
+    }
+  }
 
   waiting = true;
   elements.send.disabled = true;
@@ -371,12 +401,18 @@ async function sendMessage(content) {
   showTyping();
 
   try {
-    const data = await askAssistant();
+    const data = await askAssistant(attachments);
     removeTyping();
     history.push({ role: 'assistant', content: data.reply });
     const assistantRow = addMessage('assistant', data.reply);
     renderActions(assistantRow, data.actions, data.reply);
     updateCart(data.cart, data.cart_link);
+    if (Array.isArray(data.attachments)) {
+      data.attachments.filter(item => item?.status === 'error').forEach(item => {
+        addMessage('status', `${item.name}: ${item.note || 'не удалось обработать'}`, { alert: true });
+      });
+    }
+    if (attachments.length) clearSelectedPhoto();
   } catch (error) {
     removeTyping();
     // Keep a failed turn out of API context. A manual retry then sends the same
@@ -448,6 +484,47 @@ async function loadDemoQuestions() {
   }
 }
 
+function clearSelectedPhoto() {
+  if (selectedPhotoUrl) URL.revokeObjectURL(selectedPhotoUrl);
+  selectedPhotoUrl = null;
+  selectedPhotoFile = null;
+  elements.photoInput.value = '';
+  elements.imagePreview.removeAttribute('src');
+  elements.imageName.textContent = '';
+  elements.photoStatus.textContent = '';
+  elements.imageAttachment.classList.add('hidden');
+  elements.imageAttachment.classList.remove('flex');
+}
+
+elements.photoInput.addEventListener('change', () => {
+  const file = elements.photoInput.files?.[0];
+  if (!file) return clearSelectedPhoto();
+  if (!file.type.startsWith('image/')) {
+    clearSelectedPhoto();
+    addMessage('status', 'Выберите файл изображения.', { alert: true });
+    return;
+  }
+  if (file.size > 3 * 1024 * 1024) {
+    clearSelectedPhoto();
+    addMessage('status', 'Фото должно быть не больше 3 МБ.', { alert: true });
+    return;
+  }
+  if (selectedPhotoUrl) URL.revokeObjectURL(selectedPhotoUrl);
+  selectedPhotoUrl = URL.createObjectURL(file);
+  selectedPhotoFile = file;
+  elements.imagePreview.src = selectedPhotoUrl;
+  elements.imageName.textContent = file.name;
+  elements.photoStatus.textContent = 'Фото выбрано';
+  elements.imageAttachment.classList.remove('hidden');
+  elements.imageAttachment.classList.add('flex');
+});
+
+elements.removePhoto.addEventListener('click', clearSelectedPhoto);
+elements.findByPhoto.addEventListener('click', () => {
+  elements.input.value = elements.input.value.trim() || 'Найди товар по фото';
+  elements.form.requestSubmit();
+});
+
 categoryQuestions.forEach(([label, question]) => {
   const button = document.createElement('button');
   button.type = 'button';
@@ -460,17 +537,11 @@ categoryQuestions.forEach(([label, question]) => {
 function openExamples() {
   renderExampleQuestions();
   elements.demoPanel.classList.remove('hidden');
-  document.querySelector('#demo-button').textContent = 'Примеры вопросов';
-  document.querySelector('#demo-button-mobile').textContent = 'Показать примеры вопросов';
 }
 
 document.querySelector('#demo-button').addEventListener('click', openExamples);
 document.querySelector('#demo-button-mobile').addEventListener('click', openExamples);
-document.querySelector('#close-demo').addEventListener('click', () => toggleDemo(true));
-
-function toggleDemo(force) {
-  elements.demoPanel.classList.toggle('hidden', force ?? !elements.demoPanel.classList.contains('hidden'));
-}
+document.querySelector('#close-demo').addEventListener('click', () => elements.demoPanel.classList.add('hidden'));
 
 elements.mobileCartButton.addEventListener('click', () => setCartDrawer(true));
 elements.cartCloseButton.addEventListener('click', () => setCartDrawer(false));

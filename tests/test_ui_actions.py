@@ -81,6 +81,14 @@ class UIActionTests(unittest.TestCase):
         self.assertEqual(self.actions([{"type": "show_availability", "article": "DEMO-AV-25"}],
                                       "DEMO-AV-25 отсутствует.", "Есть DEMO-AV-25?"), [])
 
+    def test_generic_actions_are_hidden_without_context(self):
+        proposals = [{"type": "clarify"}, {"type": "contact_manager"}, {"type": "continue_search"}]
+        self.assertEqual(self.actions(
+            proposals,
+            "Какой товар вас интересует и какие параметры важны?",
+            "Помоги уточнить параметры товара",
+        ), [])
+
     def test_unknown_duplicate_model_fields_and_more_than_three_are_safe(self):
         proposals = [{"type": "open_cart"}, {"type": "javascript:alert(1)"},
                      {"type": "add_to_cart", "article": "DEMO-LED-12", "max_qty": 99999,
@@ -120,7 +128,7 @@ class UIActionTests(unittest.TestCase):
         add = [{"role": "user", "content": "Add 2 × DEMO-LED-12 to the cart"}]
         self.assertTrue(purchase_confirmed(add, self.catalog))
         added = run_demo_agent(add, "english-actions", tools)
-        self.assertIn("Added to the cart: DEMO-LED-12, quantity 2", added)
+        self.assertIn("Added to the cart: Светодиодная лампа EKT 12 Вт E27 4000 К, quantity 2", added)
         self.assertEqual(tools.get_cart("english-actions")[0]["qty"], 2)
 
         changed = run_demo_agent(

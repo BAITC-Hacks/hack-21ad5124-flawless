@@ -21,6 +21,15 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from attachments import (
+    AttachmentInput,
+    AttachmentResult,
+    bulk_add_from_context,
+    describe_images,
+    format_context,
+    process_attachments,
+    summarize_document,
+)
 from agent import CART_LINK, ShopTools, contains_payment_data, run_demo_agent, run_openai_agent
 from catalog import Catalog
 from ui_actions import ActionState, ChatAction, build_actions
@@ -89,6 +98,7 @@ class ChatRequest(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=128)
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
+    attachments: list[AttachmentInput] = Field(default_factory=list)
 
     @field_validator("session_id", mode="before")
     @classmethod
@@ -122,6 +132,7 @@ class ChatResponse(BaseModel):
     cart: list[CartItem]
     cart_link: str
     actions: list[ChatAction] = Field(default_factory=list)
+    attachments: list[AttachmentResult] = Field(default_factory=list)
 
 
 @asynccontextmanager
@@ -136,6 +147,7 @@ async def lifespan(app: FastAPI):
         action_categories.setdefault(str(product.get("category") or "").casefold(), []).append(product)
     app.state.action_categories = action_categories
     app.state.histories = {}
+    app.state.attachment_contexts = {}
     app.state.last_responses = OrderedDict()
     app.state.history_lock = RLock()
     app.state.turn_locks = tuple(RLock() for _ in range(SESSION_LOCK_STRIPES))
@@ -206,7 +218,17 @@ def demo_questions():
 def _request_hash(request: ChatRequest) -> str:
     # An exact transport retry reuses the full payload. Cart mutation has a second,
     # semantic idempotency gate in ShopTools for altered or delayed replays.
-    payload = [message.model_dump() for message in request.messages]
+    payload = {
+        "messages": [message.model_dump() for message in request.messages],
+        "attachments": [
+            (
+                item.name,
+                item.mime,
+                hashlib.sha256(item.data_base64.encode("ascii", errors="replace")).hexdigest(),
+            )
+            for item in request.attachments
+        ],
+    }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -381,6 +403,7 @@ def _response(
     reply: str,
     tools: ShopTools,
     actions: list[ChatAction] | None = None,
+    attachment_results: list[AttachmentResult] | None = None,
 ) -> ChatResponse:
     reply = str(reply or "").strip() or "Не удалось подготовить ответ. Попробуйте переформулировать вопрос."
     if len(reply) > MAX_MODEL_REPLY_CHARS:
@@ -391,6 +414,7 @@ def _response(
         cart=tools.get_cart(session_id),
         cart_link=CART_LINK,
         actions=actions or [],
+        attachments=attachment_results or [],
     )
 
 
@@ -401,8 +425,9 @@ def _finish_turn(
     reply: str,
     tools: ShopTools,
     actions: list[ChatAction] | None = None,
+    attachment_results: list[AttachmentResult] | None = None,
 ) -> ChatResponse:
-    response = _response(session_id, reply, tools, actions)
+    response = _response(session_id, reply, tools, actions, attachment_results)
     with app.state.history_lock:
         app.state.histories[session_id] = _bounded_history(
             [*messages, {"role": "assistant", "content": response.reply}],
@@ -413,6 +438,7 @@ def _finish_turn(
         while len(app.state.last_responses) > MAX_SESSION_CACHE:
             expired_session, _ = app.state.last_responses.popitem(last=False)
             app.state.histories.pop(expired_session, None)
+            app.state.attachment_contexts.pop(expired_session, None)
     return response
 
 
@@ -446,6 +472,35 @@ def _chat_unlocked(request: ChatRequest) -> ChatResponse:
             tools,
         )
 
+    processed = process_attachments(request.attachments)
+    api_key = os.getenv("OPENAI_API_KEY")
+    model = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+    if processed.image_urls and api_key:
+        describe_images(processed, api_key, model)
+    elif processed.image_urls:
+        for result in processed.results:
+            if result.kind == "image" and result.status == "ok":
+                result.status = "error"
+                result.note = "Для распознавания фото требуется ИИ-модель"
+        processed.image_urls.clear()
+
+    current_attachment_context = format_context(processed.results)
+    with app.state.history_lock:
+        prior_attachment_context = str(app.state.attachment_contexts.get(request.session_id, ""))
+        if current_attachment_context:
+            app.state.attachment_contexts[request.session_id] = current_attachment_context[-48_000:]
+    attachment_context = (prior_attachment_context + "\n\n" + current_attachment_context).strip()[-48_000:]
+
+    if request.attachments and not any(result.status == "ok" for result in processed.results):
+        return _finish_turn(
+            request.session_id,
+            request_hash,
+            messages,
+            "Не удалось прочитать вложения. Проверьте сообщения об ошибках под файлами.",
+            tools,
+            attachment_results=processed.results,
+        )
+
     if app.state.catalog.source == "unavailable":
         return _finish_turn(
             request.session_id,
@@ -453,10 +508,26 @@ def _chat_unlocked(request: ChatRequest) -> ChatResponse:
             messages,
             "Каталог EKT временно недоступен. Проверьте товары и цены позже.",
             tools,
+            attachment_results=processed.results,
+        )
+
+    bulk_reply = bulk_add_from_context(
+        latest_user["content"],
+        attachment_context,
+        tools,
+        request.session_id,
+    )
+    if bulk_reply is not None:
+        return _finish_turn(
+            request.session_id,
+            request_hash,
+            messages,
+            bulk_reply,
+            tools,
+            attachment_results=processed.results,
         )
 
     demo_mode = app.state.catalog.demo_mode
-    api_key = os.getenv("OPENAI_API_KEY")
     action_state = ActionState()
     actions_enabled = False
     trusted_action_state = False
@@ -466,21 +537,29 @@ def _chat_unlocked(request: ChatRequest) -> ChatResponse:
                 messages,
                 request.session_id,
                 tools,
-                os.getenv("MODEL_NAME", "gpt-4.1-mini"),
+                model,
                 api_key,
                 action_state,
+                attachment_context=attachment_context,
+                image_urls=processed.image_urls,
             )
             actions_enabled = True
             trusted_action_state = True
         elif demo_mode:
-            reply = run_demo_agent(messages, request.session_id, tools)
+            reply = (
+                summarize_document(current_attachment_context, tools, request.session_id, messages)
+                if current_attachment_context else None
+            ) or run_demo_agent(messages, request.session_id, tools)
             actions_enabled = True
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
     except Exception:
         LOG.exception("Chat agent failed")
         if demo_mode:
-            reply = run_demo_agent(messages, request.session_id, tools)
+            reply = (
+                summarize_document(current_attachment_context, tools, request.session_id, messages)
+                if current_attachment_context else None
+            ) or run_demo_agent(messages, request.session_id, tools)
             action_state = ActionState()
             actions_enabled = True
             trusted_action_state = False
@@ -509,6 +588,7 @@ def _chat_unlocked(request: ChatRequest) -> ChatResponse:
         reply,
         tools,
         actions,
+        processed.results,
     )
 
 

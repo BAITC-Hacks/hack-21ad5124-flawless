@@ -69,6 +69,19 @@ class GuidedSelectionTests(unittest.TestCase):
         self.assertIn("Никогда не проси клиента назвать, уточнить или подтвердить артикул", prompt)
         self.assertIn("максимум 3", prompt)
         self.assertIn("Не перечисляй всю корзину", prompt)
+        self.assertIn("Если ни одно действие не помогает", prompt)
+
+    def test_attachment_ui_replaces_demo_questions(self):
+        static = Path(__file__).parents[1] / "static"
+        html = (static / "index.html").read_text(encoding="utf-8")
+        script = (static / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="photo-input"', html)
+        self.assertIn('id="image-preview"', html)
+        self.assertIn('id="find-by-photo"', html)
+        self.assertIn('id="remove-photo"', html)
+        self.assertNotIn('id="demo-button"', html)
+        self.assertIn("URL.createObjectURL(file)", script)
+        self.assertNotIn("loadDemoQuestions()", script)
 
 
 if __name__ == "__main__":
