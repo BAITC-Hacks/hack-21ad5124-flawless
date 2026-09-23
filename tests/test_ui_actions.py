@@ -81,7 +81,7 @@ class UIActionTests(unittest.TestCase):
         self.assertEqual(self.actions([{"type": "show_availability", "article": "DEMO-AV-25"}],
                                       "DEMO-AV-25 отсутствует.", "Есть DEMO-AV-25?"), [])
 
-    def test_unknown_duplicate_model_fields_and_more_than_six_are_safe(self):
+    def test_unknown_duplicate_model_fields_and_more_than_three_are_safe(self):
         proposals = [{"type": "open_cart"}, {"type": "javascript:alert(1)"},
                      {"type": "add_to_cart", "article": "DEMO-LED-12", "max_qty": 99999,
                       "label": "<script>", "message": "javascript:alert(1)"},
@@ -91,8 +91,8 @@ class UIActionTests(unittest.TestCase):
                      {"type": "show_availability", "article": "DEMO-LED-12"},
                      {"type": "clarify"}, {"type": "continue_search"}, {"type": "payment"}]
         actions = self.actions(proposals, "Найдены лампы DEMO-LED-12 и DEMO-LED-15.", "Покажи лампы")
-        self.assertEqual(len(actions), 6)
-        self.assertEqual(len({action.type for action in actions}), 6)
+        self.assertEqual(len(actions), 3)
+        self.assertEqual(len({action.type for action in actions}), 3)
         self.assertEqual(actions[0].max_qty, 24)
         self.assertNotIn("javascript:", json.dumps([action.model_dump() for action in actions]))
         self.assertNotIn("<script>", json.dumps([action.model_dump() for action in actions]))
@@ -102,9 +102,9 @@ class UIActionTests(unittest.TestCase):
         russian = self.actions(proposed, "Лампа DEMO-LED-12 есть.", "Есть DEMO-LED-12?")[0]
         kazakh = self.actions(proposed, "Иә, DEMO-LED-12 қоймада бар.", "DEMO-LED-12 бар ма?")[0]
         self.assertEqual((russian.label, russian.message),
-                         ("Добавить", "Добавь {qty} шт DEMO-LED-12 в корзину"))
+                         ("Добавить", "Добавь {qty} шт Светодиодная лампа EKT 12 Вт E27 4000 К в корзину"))
         self.assertEqual((kazakh.label, kazakh.message),
-                         ("Себетке қосу", "DEMO-LED-12 тауарынан {qty} дана себетке қос"))
+                         ("Себетке қосу", "Светодиодная лампа EKT 12 Вт E27 4000 К тауарынан {qty} дана себетке қос"))
 
     def test_english_context_produces_english_action_copy(self):
         action = self.actions(

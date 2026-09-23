@@ -23,7 +23,7 @@ ARTICLE_ACTIONS = {
     "show_certificates", "cheaper_options", "other_brand", "change_quantity",
     "remove_from_cart",
 }
-MAX_ACTIONS = 6
+MAX_ACTIONS = 3
 MAX_UI_QUANTITY = 10_000
 
 

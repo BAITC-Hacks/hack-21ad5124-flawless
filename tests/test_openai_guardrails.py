@@ -211,6 +211,7 @@ class OpenAIGuardrailTests(unittest.TestCase):
                 user_text,
                 {
                     "article": "DEMO-LED-12",
+                    "name": "Светодиодная лампа EKT 12 Вт E27 4000 К",
                     "qty": 2,
                     "cart_link": CART_LINK,
                 },
