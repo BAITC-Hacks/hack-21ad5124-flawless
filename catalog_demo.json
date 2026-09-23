@@ -1,0 +1,46 @@
+[
+  {
+    "id": 1,
+    "article": "DEMO-LED-12",
+    "name": "Светодиодная лампа EKT 12 Вт E27 4000 К",
+    "category": "Светильники / Лампы",
+    "characteristics": {"мощность": "12 Вт", "цоколь": "E27", "цветовая температура": "4000 К"},
+    "certificates": [],
+    "price": 1290,
+    "stock": 24,
+    "stores": [{"name": "Алматы", "quantity": 24}]
+  },
+  {
+    "id": 2,
+    "article": "DEMO-LED-15",
+    "name": "Светодиодная лампа EKT 15 Вт E27 4000 К",
+    "category": "Светильники / Лампы",
+    "characteristics": {"мощность": "15 Вт", "цоколь": "E27", "цветовая температура": "4000 К"},
+    "certificates": [],
+    "price": 1590,
+    "stock": 11,
+    "stores": [{"name": "Алматы", "quantity": 11}]
+  },
+  {
+    "id": 3,
+    "article": "DEMO-AV-16",
+    "name": "Автоматический выключатель 1P 16 А",
+    "category": "Низковольтная аппаратура",
+    "characteristics": {"полюса": "1P", "номинальный ток": "16 А"},
+    "certificates": [],
+    "price": 2150,
+    "stock": 8,
+    "stores": [{"name": "Астана", "quantity": 8}]
+  },
+  {
+    "id": 4,
+    "article": "DEMO-AV-25",
+    "name": "Автоматический выключатель 1P 25 А",
+    "category": "Низковольтная аппаратура",
+    "characteristics": {"полюса": "1P", "номинальный ток": "25 А"},
+    "certificates": [],
+    "price": 2450,
+    "stock": 0,
+    "stores": []
+  }
+]
