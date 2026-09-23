@@ -72,7 +72,7 @@ class BackendTests(unittest.TestCase):
         second = self.tools.add_to_cart("one", "DEMO-LED-12", 2, request)
         self.assertEqual(first["qty"], 2)
         self.assertEqual(second["qty"], 2)
-        self.assertEqual(second["cart_link"], "https://ekt.kz/cart")
+        self.assertNotIn("cart_link", second)
         self.assertEqual(self.tools.get_cart("one")[0]["qty"], 2)
 
     def test_tool_confirmation_must_match_latest_user_message(self):
@@ -117,7 +117,8 @@ class BackendTests(unittest.TestCase):
         self.assertIn("515292", messages[3]["content"])
         self.assertIn("условия покупки", messages[5]["content"].casefold())
         self.assertEqual(tools.get_cart("one")[0]["qty"], 2)
-        self.assertIn("https://ekt.kz/cart", messages[-1]["content"])
+        self.assertIn("корзин", messages[-1]["content"].casefold())
+        self.assertNotIn("https://ekt.kz/cart", messages[-1]["content"])
 
     def test_current_team_demo_script(self):
         messages = []
@@ -133,7 +134,8 @@ class BackendTests(unittest.TestCase):
         self.assertIn("DEMO-AV-25", messages[1]["content"])
         self.assertIn("DEMO-AV-16", messages[3]["content"])
         self.assertEqual(self.tools.get_cart("team")[0]["qty"], 2)
-        self.assertIn("https://ekt.kz/cart", messages[-1]["content"])
+        self.assertIn("корзин", messages[-1]["content"].casefold())
+        self.assertNotIn("https://ekt.kz/cart", messages[-1]["content"])
 
     def test_payment_data_is_stopped_before_model(self):
         with patch.dict(os.environ, {"DEMO_MODE": "1", "OPENAI_API_KEY": "test-key"}):
@@ -234,7 +236,7 @@ class BackendTests(unittest.TestCase):
                 add = client.post("/api/chat", json={"session_id": "demo", "messages": [{"role": "user", "content": "Добавь 2 шт DEMO-LED-12"}]})
                 self.assertEqual(add.status_code, 200)
                 self.assertEqual(add.json()["cart"][0]["qty"], 2)
-                self.assertEqual(add.json()["cart_link"], "https://ekt.kz/cart")
+                self.assertIsNone(add.json()["cart_link"])
 
 
 if __name__ == "__main__":

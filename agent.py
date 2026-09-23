@@ -130,7 +130,7 @@ class ShopTools:
         with self.lock:
             existing = self.carts.get(session_id, {}).get(product["article"], 0)
             if addition_key in self.processed_additions:
-                return {"ok": True, "article": product["article"], "qty": existing, "cart": self.get_cart(session_id), "cart_link": CART_LINK}
+                return {"ok": True, "article": product["article"], "qty": existing, "cart": self.get_cart(session_id)}
             stock = product["stock"]
             if stock is None:
                 return {"error": "Остаток товара неизвестен; добавление недоступно", "article": article}
@@ -138,7 +138,7 @@ class ShopTools:
                 return {"error": "Недостаточно товара на складе", "article": article, "available": max(0, stock - existing)}
             self.carts.setdefault(session_id, {})[product["article"]] = existing + qty
             self.processed_additions.add(addition_key)
-        return {"ok": True, "article": product["article"], "qty": existing + qty, "cart": self.get_cart(session_id), "cart_link": CART_LINK}
+        return {"ok": True, "article": product["article"], "qty": existing + qty, "cart": self.get_cart(session_id)}
 
     def dispatch(self, name: str, args: dict, session_id: str, messages: list[dict]):
         try:
@@ -158,7 +158,7 @@ class ShopTools:
                         return {"error": "Подтверждение должно дословно присутствовать в последнем сообщении клиента"}
                 return self.add_to_cart(session_id, str(args["article"]), args["qty"], messages)
             if name == "get_cart":
-                return {"cart": self.get_cart(session_id), "cart_link": CART_LINK}
+                return {"cart": self.get_cart(session_id)}
         except (KeyError, TypeError, ValueError):
             return {"error": "Некорректные аргументы инструмента"}
         return {"error": "Неизвестный инструмент"}
@@ -235,10 +235,10 @@ def run_demo_agent(messages: list[dict], session_id: str, tools: ShopTools) -> s
         result = tools.dispatch("add_to_cart", {"article": articles[0], "qty": qty}, session_id, messages)
         if "error" in result:
             return f"Не удалось добавить товар: {result['error']}. Доступно: {result.get('available', 'неизвестно')}."
-        return f"Добавлено в корзину: {articles[0]}, {qty} шт. Локальная корзина не синхронизируется с сайтом EKT. Ссылка: {CART_LINK}"
+        return f"Добавлено в корзину ассистента: {articles[0]}, {qty} шт. Она пока не синхронизируется с корзиной сайта ekt.kz."
     if "корзин" in lower or "себет" in lower:
         cart = tools.dispatch("get_cart", {}, session_id, messages)["cart"]
-        return ("В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста.") + f" Ссылка: {CART_LINK} (локальная корзина с сайтом не синхронизируется)."
+        return "В корзине: " + "; ".join(f"{p['name']} — {p['qty']} шт." for p in cart) if cart else "Корзина пуста."
     if any(word in lower for word in ("достав", "оплат", "услов", "покуп")):
         return tools.dispatch("get_purchase_conditions", {}, session_id, messages)
     if "аналог" in lower:

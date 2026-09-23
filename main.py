@@ -68,8 +68,9 @@ class CartItem(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     cart: list[CartItem]
-    cart_link: str
+    cart_link: str | None
     cart_token: str | None = None
+    assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system"
 
 
 @asynccontextmanager
@@ -103,13 +104,27 @@ def health():
 
 @app.get("/api/demo-questions")
 def demo_questions():
+    if not app.state.catalog.demo_mode:
+        products = app.state.catalog.products
+        available = next((p for p in products if p["stock"] is not None and p["stock"] >= 2 and p["price"] is not None and p["price"] > 0), None)
+        unavailable = next((p for p in products if p["stock"] == 0 and app.state.catalog.analogs(p["article"])), None)
+        if available:
+            article = available["article"]
+            return {"questions": [
+                f"Какие характеристики и наличие у товара {article}?",
+                f"Подберите аналог для {unavailable['article']}" if unavailable else f"Какие похожие товары есть для {article}?",
+                "Какие условия оплаты и доставки?",
+                f"Да, добавь 2 шт {article} в корзину",
+                "Покажи корзину",
+            ]}
+        return {"questions": ["Какие товары есть в наличии?", "Какие условия оплаты и доставки?"]}
     return {"questions": load_demo_questions()}
 
 
 @app.get("/demo-cart", response_class=HTMLResponse)
 def demo_cart(token: str):
     codec: CartStateCodec | None = app.state.cart_codec
-    if not codec or not app.state.catalog.demo_mode:
+    if not codec:
         raise HTTPException(status_code=404)
     tools = ShopTools(app.state.catalog)
     try:
@@ -126,9 +141,9 @@ def demo_cart(token: str):
     total = sum((item["price"] or 0) * item["qty"] for item in cart)
     return HTMLResponse(
         "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
-        "<title>Демо-корзина EKT</title><style>body{font:16px/1.5 Arial,sans-serif;max-width:680px;margin:5vh auto;padding:24px;color:#173447}"
+        "<title>Корзина ассистента EKT</title><style>body{font:16px/1.5 Arial,sans-serif;max-width:680px;margin:5vh auto;padding:24px;color:#173447}"
         "li{display:flex;justify-content:space-between;gap:20px;padding:14px 0;border-bottom:1px solid #ddd}ul{padding:0;list-style:none}"
-        "a{color:#07547a}</style><h1>Демо-корзина EKT</h1><p>Товары и цены здесь демонстрационные. Эта корзина не связана с сайтом ekt.kz.</p>"
+        "a{color:#07547a}</style><h1>Корзина ассистента EKT</h1><p>Эта корзина не связана с корзиной сайта ekt.kz. Оформление заказа из неё пока недоступно.</p>"
         f"<ul>{rows}</ul><p><strong>Итого: {total:,.0f} ₸</strong></p><p><a href='/'>Вернуться к чату</a></p></html>",
         headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
@@ -145,11 +160,12 @@ def chat(request: ChatRequest, http_request: Request):
         except InvalidCartToken as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def response(reply: str) -> ChatResponse:
+    def response(reply: str, assistant_source: Literal["openai", "demo", "system", "unavailable"] = "system") -> ChatResponse:
         cart = tools.get_cart(request.session_id)
         token = codec.encode(tools, request.session_id) if codec else None
-        cart_link = str(http_request.url_for("demo_cart").include_query_params(token=token)) if token and cart and app.state.catalog.demo_mode else CART_LINK
-        return ChatResponse(reply=reply.replace(CART_LINK, cart_link), cart=cart, cart_link=cart_link, cart_token=token)
+        cart_link = str(http_request.url_for("demo_cart").include_query_params(token=token)) if token and cart else None
+        clean_reply = reply.replace(CART_LINK, "кнопка «Открыть корзину ассистента»")
+        return ChatResponse(reply=clean_reply, cart=cart, cart_link=cart_link, cart_token=token, assistant_source=assistant_source)
 
     if messages[-1]["role"] != "user":
         return response("Последнее сообщение должно быть от клиента.")
@@ -167,11 +183,19 @@ def chat(request: ChatRequest, http_request: Request):
     try:
         if api_key:
             reply = run_openai_agent(messages, request.session_id, tools, os.getenv("MODEL_NAME", "gpt-4.1-mini"), api_key)
+            assistant_source = "openai"
         elif demo_mode:
             reply = run_demo_agent(messages, request.session_id, tools)
+            assistant_source = "demo"
         else:
             reply = "ИИ-сервис временно недоступен. Попробуйте позже."
+            assistant_source = "unavailable"
     except Exception:
         LOG.exception("Chat agent failed")
-        reply = run_demo_agent(messages, request.session_id, tools) if demo_mode else "ИИ-сервис временно недоступен. Попробуйте позже."
-    return response(reply)
+        if demo_mode:
+            reply = run_demo_agent(messages, request.session_id, tools)
+            assistant_source = "demo"
+        else:
+            reply = "ИИ-сервис временно недоступен. Попробуйте позже."
+            assistant_source = "unavailable"
+    return response(reply, assistant_source)

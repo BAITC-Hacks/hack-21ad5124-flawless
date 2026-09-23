@@ -91,6 +91,15 @@ function addMessage(role, content, options = {}) {
     ? 'max-w-[88%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-ektDark px-4 py-3 text-sm leading-relaxed text-white sm:max-w-[75%] sm:text-[15px]'
     : 'max-w-[92%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-700 shadow-sm sm:max-w-[78%] sm:text-[15px]';
   bubble.textContent = content;
+  if (options.cartLink) {
+    const link = document.createElement('a');
+    link.href = options.cartLink;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.className = 'mt-3 block font-semibold text-ektDark underline underline-offset-2';
+    link.textContent = 'Открыть корзину ассистента';
+    bubble.append(link);
+  }
   row.append(bubble);
   elements.messages.append(row);
   elements.messages.scrollTop = elements.messages.scrollHeight;
@@ -129,12 +138,13 @@ function revealCartOnMobile() {
   }, 0);
 }
 
-function updateCart(cart = [], cartLink = 'https://ekt.kz/cart') {
+function updateCart(cart = [], cartLink = null) {
   const items = Array.isArray(cart) ? cart : [];
   const quantity = items.reduce((sum, item) => sum + normalizeQuantity(item.qty), 0);
   elements.cartCard.classList.toggle('hidden', items.length === 0);
   elements.cartCount.textContent = quantity;
-  elements.cartLink.href = cartLink || 'https://ekt.kz/cart';
+  if (cartLink) elements.cartLink.href = cartLink;
+  elements.cartLink.classList.toggle('hidden', !cartLink);
   elements.cartEmpty.classList.toggle('hidden', items.length > 0);
   elements.cartContent.classList.toggle('hidden', items.length === 0);
   elements.cartItems.replaceChildren();
@@ -193,6 +203,15 @@ async function askAssistant() {
       })
     });
     if (!response.ok) {
+      if (response.status === 400 && cartToken) {
+        cartToken = null;
+        try { window.sessionStorage.removeItem(CART_TOKEN_STORAGE_KEY); } catch (error) {
+          console.info('Не удалось удалить устаревшее состояние корзины:', error);
+        }
+        const error = new Error('Состояние корзины недействительно');
+        error.kind = 'cart-expired';
+        throw error;
+      }
       const error = new Error(`API ${response.status}`);
       error.kind = 'http';
       error.status = response.status;
@@ -212,7 +231,8 @@ async function askAssistant() {
         console.info('Не удалось сохранить состояние корзины в sessionStorage:', error);
       }
     }
-    elements.connection.textContent = 'На связи';
+    elements.connection.textContent = data.assistant_source === 'openai' ? 'ИИ на связи'
+      : data.assistant_source === 'demo' ? 'Демо-режим' : 'На связи';
     return data;
   } finally {
     window.clearTimeout(timeoutId);
@@ -220,6 +240,9 @@ async function askAssistant() {
 }
 
 function getRequestErrorMessage(error) {
+  if (error?.kind === 'cart-expired') {
+    return 'Корзина из предыдущей версии каталога больше недействительна. Начните новый диалог и добавьте товары снова.';
+  }
   if (error?.name === 'AbortError') {
     return 'Сервис не ответил вовремя. Проверьте соединение и повторите отправку.';
   }
@@ -247,10 +270,14 @@ async function sendMessage(content) {
     const data = await askAssistant();
     removeTyping();
     history.push({ role: 'assistant', content: data.reply });
-    addMessage('assistant', data.reply);
+    addMessage('assistant', data.reply, { cartLink: data.cart.length ? data.cart_link : null });
     updateCart(data.cart, data.cart_link);
   } catch (error) {
     removeTyping();
+    if (error?.kind === 'cart-expired') {
+      history.length = 0;
+      updateCart([], null);
+    }
     // Keep a failed turn out of API context. A manual retry then sends the same
     // request hash, so a response lost after a cart mutation cannot add twice.
     const failedTurn = history[history.length - 1];

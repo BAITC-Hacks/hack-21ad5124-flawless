@@ -8,7 +8,9 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 
-BASE = (sys.argv[1] if len(sys.argv) > 1 else "https://ekt-ai-assistant-demo.vercel.app").rstrip("/")
+EXPECT_OPENAI = "--expect-openai" in sys.argv
+ARGS = [arg for arg in sys.argv[1:] if arg != "--expect-openai"]
+BASE = (ARGS[0] if ARGS else "https://ekt-ai-assistant-demo.vercel.app").rstrip("/")
 
 
 def get(path: str) -> bytes:
@@ -21,7 +23,8 @@ def main() -> None:
     assert b"EKT" in get("/")
     assert b"cart_token" in get("/static/app.js")
     health = json.loads(get("/health"))
-    assert health["ok"] and health["catalog_source"] == "demo" and health["products"] > 0
+    assert health["ok"] and health["catalog_source"] in ("demo", "live") and health["products"] > 0
+    demo_mode = health["catalog_source"] == "demo"
 
     session_id = "smoke-" + uuid4().hex
     messages: list[dict[str, str]] = []
@@ -32,7 +35,7 @@ def main() -> None:
         messages.append({"role": "user", "content": question})
         payload = json.dumps({"session_id": session_id, "messages": messages, "cart_token": cart_token}).encode()
         request = Request(BASE + "/api/chat", data=payload, headers={"Content-Type": "application/json"})
-        with urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=60) as response:
             assert response.status == 200, response.status
             result = json.load(response)
         messages.append({"role": "assistant", "content": result["reply"]})
@@ -40,24 +43,34 @@ def main() -> None:
         assert cart_token
         return result
 
-    product = ask("Есть DEMO-AV-16?")
-    assert "DEMO-AV-16" in product["reply"] and not product["cart"]
-    analog = ask("DEMO-AV-25 нет в наличии? Какой аналог посоветуете?")
-    assert "DEMO-AV-16" in analog["reply"] and not analog["cart"]
+    questions = json.loads(get("/api/demo-questions"))["questions"]
+    if demo_mode:
+        article = "DEMO-AV-16"
+        product = ask("Есть DEMO-AV-16?")
+        assert article in product["reply"] and not product["cart"]
+        analog = ask("DEMO-AV-25 нет в наличии? Какой аналог посоветуете?")
+        assert article in analog["reply"] and not analog["cart"]
+    else:
+        article = questions[0].split()[-1].rstrip("?")
+        product = ask(questions[0])
+        assert article.casefold() in product["reply"].casefold() and not product["cart"]
+    if EXPECT_OPENAI:
+        assert product["assistant_source"] == "openai", product["assistant_source"]
     conditions = ask("Какие условия оплаты и доставки?")
     assert "достав" in conditions["reply"].lower() and not conditions["cart"]
-    added = ask("Да, добавь 2 шт DEMO-AV-16 в корзину")
+    added = ask(f"Да, добавь 2 шт {article} в корзину")
     assert len(added["cart"]) == 1 and added["cart"][0]["qty"] == 2
     assert added["cart_link"].startswith(BASE + "/demo-cart?token=")
+    assert "token=" not in added["reply"]
     with urlopen(added["cart_link"], timeout=30) as response:
         assert response.status == 200
-        assert "DEMO-AV-16" in response.read().decode()
+        assert article in response.read().decode()
         assert response.headers["Cache-Control"] == "no-store"
-    over_stock = ask("Да, добавь 99 шт DEMO-AV-16 в корзину")
+    over_stock = ask(f"Да, добавь 999999 шт {article} в корзину")
     assert over_stock["cart"][0]["qty"] == 2
     resumed = ask("Покажи корзину")
     assert resumed["cart"][0]["qty"] == 2
-    print("Public demo passed: page, catalog, analog, conditions, confirmation, stock limit, persistent cart, cart link")
+    print(f"Public {health['catalog_source']} demo passed with {product['assistant_source']}: page, catalog, conditions, confirmation, stock limit, persistent cart, cart link")
 
 
 if __name__ == "__main__":
