@@ -74,24 +74,29 @@
 
         <div id="messages" class="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[#fbfcfd] px-4 py-5 sm:px-7 sm:py-7" aria-live="polite" aria-label="Сообщения чата"></div>
 
-        <div id="demo-panel" class="hidden border-t border-slate-200 bg-ektLight px-4 py-3 sm:px-6">
-          <div class="mb-2 flex items-center justify-between gap-4">
-            <p class="text-xs font-bold uppercase tracking-wider text-ektDark">Выберите пример вопроса</p>
-            <button id="close-demo" type="button" class="text-xs text-slate-500 hover:text-ektDark">Закрыть</button>
-          </div>
-          <div id="demo-questions" class="flex gap-2 overflow-x-auto pb-1"></div>
-        </div>
-
         <div class="border-t border-slate-200 bg-white p-3 sm:p-4">
+          <div id="image-attachment" class="mb-3 hidden items-center gap-3 rounded-xl border border-sky-200 bg-ektLight p-3">
+            <img id="image-preview" class="h-16 w-16 shrink-0 rounded-lg border border-white bg-white object-cover" alt="Предпросмотр выбранного фото">
+            <div class="min-w-0 flex-1">
+              <p id="image-name" class="truncate text-sm font-bold text-ektDark"></p>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button id="find-by-photo" type="button" class="rounded-lg bg-ekt px-3 py-2 text-xs font-bold text-white hover:bg-ektDark">Найти товар</button>
+                <button id="remove-photo" type="button" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:border-red-300 hover:text-red-600">Удалить фото</button>
+              </div>
+              <p id="photo-status" class="mt-1 text-[11px] text-slate-500" aria-live="polite"></p>
+            </div>
+          </div>
           <form id="chat-form" class="flex items-end gap-2">
-            <button id="demo-button" type="button" class="hidden min-h-12 shrink-0 rounded border-2 border-ekt px-4 text-sm font-bold text-ekt transition hover:bg-ekt hover:text-white sm:block">Пример диалога</button>
+            <label for="photo-input" class="grid h-12 w-12 shrink-0 cursor-pointer place-items-center rounded border-2 border-ekt text-ekt transition hover:bg-ekt hover:text-white" aria-label="Прикрепить фото" title="Прикрепить фото">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m8.5 12.5 6.8-6.8a3 3 0 1 1 4.2 4.2l-9.2 9.2a5 5 0 0 1-7.1-7.1l9-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6.7 14.7 8.5-8.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </label>
+            <input id="photo-input" class="sr-only" type="file" accept="image/*">
             <label class="sr-only" for="question">Ваш вопрос</label>
             <textarea id="question" rows="1" maxlength="8000" required autocomplete="off" placeholder="Например: подберите автомат Schneider на 16 А" class="max-h-32 min-h-12 flex-1 resize-none rounded border border-slate-300 px-4 py-3 outline-none transition placeholder:text-slate-400 focus:border-ekt focus:ring-4 focus:ring-sky-100"></textarea>
             <button id="send-button" type="submit" class="grid h-12 w-12 shrink-0 place-items-center rounded bg-accent text-ektDark transition hover:bg-yellow-400 focus:outline-none focus:ring-4 focus:ring-yellow-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label="Отправить сообщение">
               <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 4 17 8-17 8 3-8-3-8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M7 12h14" stroke="currentColor" stroke-width="2"/></svg>
             </button>
           </form>
-          <button id="demo-button-mobile" type="button" class="mt-2 text-left text-xs font-bold text-ekt sm:hidden">Показать примеры вопросов</button>
           <p class="mt-2 text-center text-[11px] text-slate-400">Цены и остатки ориентировочные — уточняйте условия у менеджера EKT</p>
         </div>
       </section>

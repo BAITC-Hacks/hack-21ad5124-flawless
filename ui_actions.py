@@ -115,10 +115,6 @@ def demo_action_proposals(latest: str, reply: str, catalog: Catalog, cart_before
         return [{"type": "change_quantity", "article": changed[0]},
                 {"type": "remove_from_cart", "article": changed[0]}, {"type": "continue_search"}]
 
-    latest_lower = latest.casefold()
-    if any(word in latest_lower for word in ("достав", "оплат", "услов", "жеткіз", "төлем")):
-        return [{"type": "delivery"}, {"type": "payment"}, {"type": "contact_manager"}]
-
     mentioned = _mentioned_articles(latest, catalog) or _mentioned_articles(reply, catalog)
     if len(mentioned) == 1:
         article = mentioned[0]
@@ -130,7 +126,7 @@ def demo_action_proposals(latest: str, reply: str, catalog: Catalog, cart_before
                 ("show_analogs", "show_availability", "other_brand")] + [{"type": "continue_search"}]
     if len(mentioned) >= 2:
         return [{"type": "compare"}, {"type": "clarify"}, {"type": "continue_search"}]
-    return [{"type": "clarify"}, {"type": "contact_manager"}, {"type": "continue_search"}]
+    return []
 
 
 def _brand(product: dict) -> str:
@@ -224,6 +220,15 @@ def build_actions(proposals: list[dict], reply: str, latest: str, catalog: Catal
         elif kind == "delivery" and ("достав" in reply_lower or "жеткіз" in reply_lower):
             continue
         elif kind == "payment" and ("оплат" in reply_lower or "төлем" in reply_lower):
+            continue
+        elif kind == "clarify":
+            # A generic clarification button only repeats the assistant's question.
+            continue
+        elif kind == "continue_search" and not re.search(
+                r"не найден|не наш[её]л|нет в каталоге|табылма|каталогта жоқ", reply_lower):
+            continue
+        elif kind == "contact_manager" and not re.search(
+                r"менеджер|не могу подтвердить|уточнить у специалиста", reply_lower):
             continue
         elif kind == "contact_manager" and re.search(r"\+\d[\d\s()\-]{7,}|@[\w.-]+", reply):
             continue

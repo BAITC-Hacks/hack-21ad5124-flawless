@@ -58,6 +58,14 @@ class UIActionTests(unittest.TestCase):
         self.assertEqual(self.actions([{"type": "show_availability", "article": "DEMO-AV-25"}],
                                       "DEMO-AV-25 отсутствует.", "Есть DEMO-AV-25?"), [])
 
+    def test_generic_actions_are_hidden_without_context(self):
+        proposals = [{"type": "clarify"}, {"type": "contact_manager"}, {"type": "continue_search"}]
+        self.assertEqual(self.actions(
+            proposals,
+            "Какой товар вас интересует и какие параметры важны?",
+            "Помоги уточнить параметры товара",
+        ), [])
+
     def test_unknown_duplicate_model_fields_and_more_than_three_are_safe(self):
         proposals = [{"type": "open_cart"}, {"type": "javascript:alert(1)"},
                      {"type": "add_to_cart", "article": "DEMO-LED-12", "max_qty": 99999,
