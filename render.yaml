@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ekt-ai-assistant
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.5
+      - key: DEMO_MODE
+        value: "0"
+      - key: CATALOG_PER_PAGE
+        value: "1000"
+      - key: CATALOG_PAGES
+        value: "0"
+      - key: MODEL_NAME
+        value: gpt-4.1-mini
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: EKT_API_USER
+        sync: false
+      - key: EKT_API_PASSWORD
+        sync: false
