@@ -5,18 +5,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+from html import escape
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent import CART_LINK, ShopTools, contains_payment_data, run_demo_agent, run_openai_agent
+from cart_state import CartStateCodec, InvalidCartToken
 from catalog import Catalog
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +55,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
+    cart_token: str | None = Field(default=None, max_length=8192)
 
 
 class CartItem(BaseModel):
@@ -65,6 +69,7 @@ class ChatResponse(BaseModel):
     reply: str
     cart: list[CartItem]
     cart_link: str
+    cart_token: str | None = None
 
 
 @asynccontextmanager
@@ -73,6 +78,8 @@ async def lifespan(app: FastAPI):
     catalog.load()
     app.state.catalog = catalog
     app.state.tools = ShopTools(catalog)
+    signing_key = os.getenv("CART_SIGNING_KEY")
+    app.state.cart_codec = CartStateCodec(signing_key) if signing_key else None
     yield
 
 
@@ -99,20 +106,61 @@ def demo_questions():
     return {"questions": load_demo_questions()}
 
 
+@app.get("/demo-cart", response_class=HTMLResponse)
+def demo_cart(token: str):
+    codec: CartStateCodec | None = app.state.cart_codec
+    if not codec or not app.state.catalog.demo_mode:
+        raise HTTPException(status_code=404)
+    tools = ShopTools(app.state.catalog)
+    try:
+        session_id = codec.restore(tools, token)
+    except InvalidCartToken as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    cart = tools.get_cart(session_id)
+    rows = "".join(
+        f"<li><span>{escape(item['name'])} ({escape(item['article'])}) × {item['qty']}</span>"
+        f"<strong>{item['price'] * item['qty']:,.0f} ₸</strong></li>" if item["price"] is not None else
+        f"<li><span>{escape(item['name'])} ({escape(item['article'])}) × {item['qty']}</span><strong>Цена неизвестна</strong></li>"
+        for item in cart
+    )
+    total = sum((item["price"] or 0) * item["qty"] for item in cart)
+    return HTMLResponse(
+        "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Демо-корзина EKT</title><style>body{font:16px/1.5 Arial,sans-serif;max-width:680px;margin:5vh auto;padding:24px;color:#173447}"
+        "li{display:flex;justify-content:space-between;gap:20px;padding:14px 0;border-bottom:1px solid #ddd}ul{padding:0;list-style:none}"
+        "a{color:#07547a}</style><h1>Демо-корзина EKT</h1><p>Товары и цены здесь демонстрационные. Эта корзина не связана с сайтом ekt.kz.</p>"
+        f"<ul>{rows}</ul><p><strong>Итого: {total:,.0f} ₸</strong></p><p><a href='/'>Вернуться к чату</a></p></html>",
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+def chat(request: ChatRequest, http_request: Request):
     messages = [message.model_dump() for message in request.messages]
-    tools: ShopTools = app.state.tools
+    codec: CartStateCodec | None = app.state.cart_codec
+    tools: ShopTools = ShopTools(app.state.catalog) if codec else app.state.tools
+    if codec and request.cart_token:
+        try:
+            codec.restore(tools, request.cart_token, request.session_id)
+        except InvalidCartToken as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def response(reply: str) -> ChatResponse:
+        cart = tools.get_cart(request.session_id)
+        token = codec.encode(tools, request.session_id) if codec else None
+        cart_link = str(http_request.url_for("demo_cart").include_query_params(token=token)) if token and cart and app.state.catalog.demo_mode else CART_LINK
+        return ChatResponse(reply=reply.replace(CART_LINK, cart_link), cart=cart, cart_link=cart_link, cart_token=token)
+
     if messages[-1]["role"] != "user":
-        return ChatResponse(reply="Последнее сообщение должно быть от клиента.", cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
+        return response("Последнее сообщение должно быть от клиента.")
 
     if contains_payment_data(messages[-1]["content"]):
-        return ChatResponse(reply="Не отправляйте платёжные данные в чат. Оплата проходит только на сайте при оформлении заказа.", cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
+        return response("Не отправляйте платёжные данные в чат. Оплата проходит только на сайте при оформлении заказа.")
 
     messages = [{**message, "content": "[Платёжные данные удалены]" if contains_payment_data(message["content"]) else message["content"]} for message in messages]
 
     if app.state.catalog.source == "unavailable":
-        return ChatResponse(reply="Каталог EKT временно недоступен. Проверьте товары и цены позже.", cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
+        return response("Каталог EKT временно недоступен. Проверьте товары и цены позже.")
 
     demo_mode = os.getenv("DEMO_MODE", "0") == "1"
     api_key = os.getenv("OPENAI_API_KEY")
@@ -126,4 +174,4 @@ def chat(request: ChatRequest):
     except Exception:
         LOG.exception("Chat agent failed")
         reply = run_demo_agent(messages, request.session_id, tools) if demo_mode else "ИИ-сервис временно недоступен. Попробуйте позже."
-    return ChatResponse(reply=reply, cart=tools.get_cart(request.session_id), cart_link=CART_LINK)
+    return response(reply)

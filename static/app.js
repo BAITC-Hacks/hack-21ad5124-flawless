@@ -1,4 +1,5 @@
 const SESSION_STORAGE_KEY = 'ekt-chat-session-id';
+const CART_TOKEN_STORAGE_KEY = 'ekt-cart-token';
 const MAX_API_MESSAGES = 40;
 const CHAT_TIMEOUT_MS = 25_000;
 const DEMO_QUESTIONS_TIMEOUT_MS = 5_000;
@@ -34,6 +35,12 @@ function getSessionId() {
 }
 
 const sessionId = getSessionId();
+let cartToken = null;
+try {
+  cartToken = window.sessionStorage.getItem(CART_TOKEN_STORAGE_KEY);
+} catch (error) {
+  console.info('sessionStorage недоступен для корзины:', error);
+}
 const history = [];
 let waiting = false;
 let demoQuestions = [...CANONICAL_DEMO_QUESTIONS];
@@ -181,7 +188,8 @@ async function askAssistant() {
       signal: controller.signal,
       body: JSON.stringify({
         session_id: sessionId,
-        messages: getApiMessages()
+        messages: getApiMessages(),
+        cart_token: cartToken
       })
     });
     if (!response.ok) {
@@ -195,6 +203,14 @@ async function askAssistant() {
       const error = new Error('Некорректный ответ API');
       error.kind = 'invalid-response';
       throw error;
+    }
+    if (typeof data.cart_token === 'string') {
+      cartToken = data.cart_token;
+      try {
+        window.sessionStorage.setItem(CART_TOKEN_STORAGE_KEY, cartToken);
+      } catch (error) {
+        console.info('Не удалось сохранить состояние корзины в sessionStorage:', error);
+      }
     }
     elements.connection.textContent = 'На связи';
     return data;
