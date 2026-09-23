@@ -214,7 +214,8 @@ def process_attachments(files: list[AttachmentInput]) -> ProcessedAttachments:
         extension = PurePath(name).suffix.casefold()
         expected = EXTENSIONS.get(extension)
         kind = _detect_kind(data) if data else "unsupported"
-        response_kind = expected or ("image" if kind.startswith("image/") else kind if kind in {"pdf", "docx", "xlsx"} else "pdf")
+        response_kind = expected or ({".doc": "docx", ".docm": "docx", ".xls": "xlsx", ".xlsm": "xlsx"}.get(extension)
+                                     or ("image" if kind.startswith("image/") else kind if kind in {"pdf", "docx", "xlsx"} else "pdf"))
         failure = ""
         if extension in {".doc", ".xls", ".docm", ".xlsm"}:
             failure = "Формат или макросы не поддерживаются. " + FORMAT_HINT
